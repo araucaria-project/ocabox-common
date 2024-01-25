@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "ocabox-common"
+version = "1.0.0"
+license = "MIT"
+description = ""
+authors = ["Ernest Lasek <elasek@akond.com>, Mikołaj Kałuszyński <mkalusz@camk.edu.pl>"]
+readme = "README.md"
+repository = "https://github.com/araucaria-project/ocabox-common"
+keywords = ["ocabox-common"]
+packages = [
+    { include = "obcom" },
+    { include = "test" },
+]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+pyzmq = "^25.0.2"
+msgpack = ">=1.0.3,<1.1.0"
+confuse = ">=1.7.0,<1.8.0"
+
+
+[tool.poetry.scripts]
+tests = "test.run_tests:main"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

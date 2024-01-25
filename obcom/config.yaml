@@ -1,0 +1,38 @@
+LOG_LEVEL: INFO
+
+
+comunication:
+  ConditionalCycleQuery:
+    default_delay: 5
+    max_missed_msg: 3
+    request_timeout: 30
+  PeriodicCycleQuery:
+    default_delay: 5
+    max_missed_msg: 3
+    request_timeout: 30
+    min_delay: 0.5
+
+data_collection:
+  ValueRequest:
+    default_request_timeout: 30
+    time_of_data_tolerance: 60
+
+client:
+  DefaultClientTest:
+    port: 5559
+    url: localhost
+    protocol: tcp
+    timeout: 30
+    time_of_data_tolerance: 0.5
+    request_timeout: 2.16
+    delay: 0.1
+    max_missed_msg: 3
+
+  SampleTestClient:
+    port: 5560
+    url: localhost
+    protocol: tcp
+    timeout: 1
+    app:
+      base_fits_dir_test_default: test_dir22
+
