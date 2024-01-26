@@ -71,7 +71,8 @@ class SingletonConfig(metaclass=SingletonMeta):
 
     @classmethod
     def _get_default_config_files(cls):
-        return [cls.get_package_file_path(cls._DEFAULT_CONFIG_FILE_NAME)]  # /obcom/config.yaml
+        # from every classes inheriting from this one: /obsrv/config.yaml / /ob/config.yaml / else...
+        return [os.path.join(cls._get_inst_dir(), cls._DEFAULT_CONFIG_FILE_NAME)]
 
     @classmethod
     def _get_system_config_files(cls):
@@ -90,9 +91,14 @@ class SingletonConfig(metaclass=SingletonMeta):
 
     @classmethod
     def get_config_files(cls):
+        # first is getting by SingletonConfig because we get a original config.yaml from obcom, rest is getting by
+        # cls so will be getting from the project files inheriting from this project
+        # for example first is always obcom/config.yaml but second will be changed to for example
+        # obsrv/config.yaml or ob/config.yaml
         return SingletonConfig._get_default_config_files() + \
-            SingletonConfig._get_system_config_files() + \
-            SingletonConfig._get_volume_config_files() + \
+            cls._get_default_config_files() + \
+            cls._get_system_config_files() + \
+            cls._get_volume_config_files() + \
             cls.additional_files
 
     @classmethod
