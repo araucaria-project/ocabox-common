@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__.rsplit('.')[-1])
 class BaseCommunicationObject(ABC):
     DEFAULT_NAME = 'BaseCommunicationObject'
     TYPE = 'default_communication_object'
+    _SING_CONF = SingletonConfig
 
     def __init__(self, name: str = None, **kwargs):
         self.name = name if name else self.DEFAULT_NAME
@@ -37,7 +38,7 @@ class BaseCommunicationObject(ABC):
         :return: config value or None if method can't find it
         """
         def build_request(name):
-            c = SingletonConfig.get_config()[self.TYPE][name]
+            c = self._SING_CONF.get_config()[self.TYPE][name]
             for n in name_cfg:
                 c = c[n]
             return c
