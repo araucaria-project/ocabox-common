@@ -4,7 +4,6 @@ import uuid
 
 class BaseTreeUser:
     def __init__(self, name: str = '', **kwargs):
-        super().__init__(**kwargs)
         self._user_id: bytes = b''
         self.login_date: float = time.time()
         self.name: str = name
