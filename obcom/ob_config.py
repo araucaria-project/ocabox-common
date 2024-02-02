@@ -77,8 +77,8 @@ class SingletonConfig(metaclass=SingletonMeta):
     @classmethod
     def _get_system_config_files(cls):
         return [
-            os.path.join('/user/local/etc/ocabox', cls._DEFAULT_CONFIG_FILE_NAME),  # /etc/ocabox/config.yaml
-            os.path.join('/user/local/etc/ocabox', cls._SECRET_CONFIG_FILE_NAME)  # /etc/ocabox/.secrets.yaml
+            os.path.join('/usr/local/etc/ocabox', cls._DEFAULT_CONFIG_FILE_NAME),  # /etc/ocabox/config.yaml
+            os.path.join('/usr/local/etc/ocabox', cls._SECRET_CONFIG_FILE_NAME)  # /etc/ocabox/.secrets.yaml
         ]
 
     @classmethod
