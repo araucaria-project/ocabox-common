@@ -6,7 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ## [1.0.1]
 ### Changed
-- The application has been adapted to the new requirements in version 1.0.1 of `ocabox-common`.
+- Configuration file system `confuse` removed. The current configuration system will be a server-only feature 
+and will be still in use in `ocabox-server`. Client (new `ocabox`) will get a new system.
 
 ## [1.0.0]
 ### Added
