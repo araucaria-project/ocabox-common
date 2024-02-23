@@ -9,7 +9,6 @@ from obcom.data_colection.address import Address
 from obcom.data_colection.response_error import ResponseError
 from obcom.data_colection.tree_user import TreeUser, BaseTreeUser
 from obcom.data_colection.value import Value
-from obcom.ob_config import SingletonConfig
 
 logger = logging.getLogger(__name__.rsplit('.')[-1])
 
@@ -101,10 +100,11 @@ class ValueRequest(ValueExchange):
     cycle_query: bool = False
 
     def __post_init__(self):
+        DEFAULT_REQUEST_TIMEOUT = 30
+        DEFAULT_TIME_OF_DATA_TOLERANCE = 60
         # check timeout
         if self.request_timeout is None:
-            self.request_timeout = time.time() + SingletonConfig.get_config()['data_collection'][type(self).__name__][
-                'default_request_timeout'].get()
+            self.request_timeout = time.time() + DEFAULT_REQUEST_TIMEOUT
         # check address
         if isinstance(self.address, dict):
             self.address = Address(**self.address)
@@ -121,8 +121,7 @@ class ValueRequest(ValueExchange):
             raise ValueError
         # check time_of_data_tolerance
         if self.time_of_data_tolerance is None:
-            self.time_of_data_tolerance = SingletonConfig.get_config()['data_collection'][type(self).__name__][
-                'time_of_data_tolerance'].get()
+            self.time_of_data_tolerance = DEFAULT_TIME_OF_DATA_TOLERANCE
         self.time_of_data_tolerance = float(self.time_of_data_tolerance)  # this raise ValueError if is wrong type
         # check request type
         if self.request_type not in self.KNOWN_REQUEST_TYPES:

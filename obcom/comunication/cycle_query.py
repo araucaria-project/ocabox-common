@@ -7,7 +7,6 @@ from obcom.comunication.base_client_request_solver import BaseClientRequestSolve
 from obcom.comunication.comunication_error import CommunicationRuntimeError, CommunicationTimeoutError
 from obcom.data_colection.response_error import ResponseError
 from obcom.data_colection.value_call import ValueRequest, ValueResponse
-from obcom.ob_config import SingletonConfig
 from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__.rsplit('.')[-1])
@@ -33,6 +32,10 @@ class BaseCycleQuery(ABC):
     :raise CommunicationRuntimeError: if not provide async loop and czn not get existing loop
     """
 
+    DEFAULT_DELAY = 5
+    DEFAULT_MAX_MISSED_MSG = 3
+    DEFAULT_REQUEST_TIMEOUT = 30
+
     def __init__(self, crs: BaseClientRequestSolver, list_request: List[ValueRequest], delay: float or None = None,
                  loop=None, query_name: str = 'Default cycle query', max_missed_msg: int = None, **kwargs):
         self._query_name = query_name
@@ -41,10 +44,10 @@ class BaseCycleQuery(ABC):
         self._event: asyncio.Event = asyncio.Event()
         self._last_response: List[ValueResponse] = []
         if delay is None or delay <= 0:
-            delay = SingletonConfig.get_config()['comunication'][type(self).__name__]['default_delay'].get()
+            delay = self.DEFAULT_DELAY
         self._delay: float = delay
         if max_missed_msg is None:
-            max_missed_msg = SingletonConfig.get_config()['comunication'][type(self).__name__]['max_missed_msg'].get()
+            max_missed_msg = self.DEFAULT_MAX_MISSED_MSG
         self._max_missed_msg: int = max_missed_msg  # can be number from -1 to inf
         self._task: asyncio.Task or None = None
         self._loop = loop
@@ -226,13 +229,15 @@ class PeriodicCycleQuery(BaseCycleQuery):
     :raise CommunicationRuntimeError: if not provide async loop and czn not get existing loop
     """
 
+    _DEFAULT_MIN_DELAY = 0.5
+
     def __init__(self, crs: BaseClientRequestSolver, list_request: List[ValueRequest], delay: float or None = None,
                  loop=None, log_missed_msg: bool = False, query_name: str = 'Default periodic query',
                  max_missed_msg: int = None, **kwargs):
         super().__init__(crs=crs, list_request=list_request, delay=delay, loop=loop, query_name=query_name,
                          max_missed_msg=max_missed_msg, **kwargs)
         self._log_missed_msg: bool = log_missed_msg
-        self._min_delay = SingletonConfig.get_config()['comunication'][type(self).__name__]['min_delay'].get()
+        self._min_delay = self._DEFAULT_MIN_DELAY
         if self._delay < self._min_delay:
             logger.warning(f"delay value is to low. Will by set to {self._min_delay}")
 
@@ -326,7 +331,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
         super().__init__(crs=crs, list_request=list_request, delay=delay, loop=loop,
                          query_name=query_name, max_missed_msg=max_missed_msg, **kwargs)
         if request_timeout is None:
-            request_timeout = SingletonConfig.get_config()['comunication'][type(self).__name__]['request_timeout'].get()
+            request_timeout = self.DEFAULT_REQUEST_TIMEOUT
         self._timeout: float = request_timeout
         for r in self._list_request:
             r.request_timeout = self._timeout

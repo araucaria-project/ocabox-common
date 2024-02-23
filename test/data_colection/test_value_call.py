@@ -80,8 +80,7 @@ class ValueRequestTest(unittest.TestCase):
         self.assertDictEqual(out_dict, expected_dict)
 
     def test_default_config(self):
-        expected_time_of_data_tolerance = self._cfg.config['data_collection']['ValueRequest'][
-            'time_of_data_tolerance'].get()
+        expected_time_of_data_tolerance = 60
         vr = ValueRequest('aaa.bbb.ccc')
         # request_timeout
         self.assertEqual(expected_time_of_data_tolerance, vr.time_of_data_tolerance)

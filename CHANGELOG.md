@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 
+## [1.0.1]
+### Changed
+- The application has been adapted to the new requirements in version 1.0.1 of `ocabox-common`.
+
 ## [1.0.0]
 ### Added
 - Project core files added and initialized.

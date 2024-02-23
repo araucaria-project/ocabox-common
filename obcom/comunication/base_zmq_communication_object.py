@@ -14,11 +14,7 @@ class BaseZmqCommunicationObject(BaseCommunicationObject, ABC):
 
     def __init__(self, name: str = None, port: int = None, **kwargs):
         super().__init__(name=name, **kwargs)
-
-        self._port = port if port else self._get_cfg('port')
-        if not self._port or not isinstance(self._port, int):
-            logger.error(f"Can not get correct port ({self._port}) for {self.TYPE}")
-            raise RuntimeError
+        self._port = port
         # OMQ
         self.context = Context()
         self._front_socket = None
