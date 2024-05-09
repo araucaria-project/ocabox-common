@@ -110,7 +110,7 @@ class BaseClientAPI(ABC):
                                request_data=parameters_dict,
                                user=self.user)
         CQ_API = ConditionalCycleQuery(crs=self._CRS, list_request=[request], delay=delay,
-                                       max_missed_msg=max_missed_msg, name=name)
+                                       max_missed_msg=max_missed_msg, query_name=name)
         return CQ_API
 
     async def subscribe_with_callback(self, address: str or Address, time_of_data_tolerance: float or None = None,
@@ -189,7 +189,7 @@ class BaseClientAPI(ABC):
                                request_data=parameters_dict,
                                user=self.user)
         CQ_API = PeriodicCycleQuery(crs=self._CRS, list_request=[request], delay=delay,
-                                    max_missed_msg=max_missed_msg, name=name, log_missed_msg=log_missed_msg)
+                                    max_missed_msg=max_missed_msg, query_name=name, log_missed_msg=log_missed_msg)
         return CQ_API
 
     @abstractmethod

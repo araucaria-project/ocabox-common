@@ -20,6 +20,8 @@ class ValueExchange:
     """
     STANDARD_KEYS: ClassVar[list] = []  # master keys that store essential data
     _CONVERTING_TYPES: ClassVar[list] = [Address, Value, ResponseError, TreeUser]
+    DEFAULT_REQUEST_TIMEOUT: ClassVar[float] = 30.0
+    DEFAULT_TIME_OF_DATA_TOLERANCE: ClassVar[float] = 60.0
 
     @classmethod
     def from_dict(cls, dict_):
@@ -100,11 +102,9 @@ class ValueRequest(ValueExchange):
     cycle_query: bool = False
 
     def __post_init__(self):
-        DEFAULT_REQUEST_TIMEOUT = 30
-        DEFAULT_TIME_OF_DATA_TOLERANCE = 60
         # check timeout
         if self.request_timeout is None:
-            self.request_timeout = time.time() + DEFAULT_REQUEST_TIMEOUT
+            self.request_timeout = time.time() + ValueRequest.DEFAULT_REQUEST_TIMEOUT
         # check address
         if isinstance(self.address, dict):
             self.address = Address(**self.address)
@@ -121,7 +121,7 @@ class ValueRequest(ValueExchange):
             raise ValueError
         # check time_of_data_tolerance
         if self.time_of_data_tolerance is None:
-            self.time_of_data_tolerance = DEFAULT_TIME_OF_DATA_TOLERANCE
+            self.time_of_data_tolerance = ValueRequest.DEFAULT_TIME_OF_DATA_TOLERANCE
         self.time_of_data_tolerance = float(self.time_of_data_tolerance)  # this raise ValueError if is wrong type
         # check request type
         if self.request_type not in self.KNOWN_REQUEST_TYPES:
