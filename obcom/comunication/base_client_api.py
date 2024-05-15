@@ -87,7 +87,8 @@ class BaseClientAPI(ABC):
 
     async def subscribe(self, address: str or Address, time_of_data_tolerance: float or None = None,
                         delay: float or None = None, parameters_dict: dict = None,
-                        name: str = 'Default_subscription', max_missed_msg: int = None) -> BaseCycleQuery:
+                        name: str = 'Default_subscription', max_missed_msg: int = None,
+                        ignore_errors: bool = False) -> BaseCycleQuery:
         """
         This method creates a cycle query that only returns new values. The `ConditionalCycleQuery` object is
         created and returned.
@@ -99,6 +100,7 @@ class BaseClientAPI(ABC):
         :param parameters_dict: dict of parameters to send witch request GET/PUT/etc...
         :param name: name of the subscription
         :param max_missed_msg: more information in :class:`.cycle_query.ConditionalCycleQuery`
+        :param ignore_errors: more information in :class:`.cycle_query.ConditionalCycleQuery`
         :return: object `ConditionalCycleQuery`
         """
         if time_of_data_tolerance is None and delay:
@@ -110,13 +112,14 @@ class BaseClientAPI(ABC):
                                request_data=parameters_dict,
                                user=self.user)
         CQ_API = ConditionalCycleQuery(crs=self._CRS, list_request=[request], delay=delay,
-                                       max_missed_msg=max_missed_msg, query_name=name)
+                                       max_missed_msg=max_missed_msg, query_name=name, ignore_errors=ignore_errors)
         return CQ_API
 
     async def subscribe_with_callback(self, address: str or Address, time_of_data_tolerance: float or None = None,
                                       delay: float or None = None, parameters_dict: dict = None,
                                       name: str = 'Default_subscription', max_missed_msg: int = None,
-                                      callback_method=None, async_callback_method=None) -> BaseCycleQuery:
+                                      ignore_errors: bool = False, callback_method=None,
+                                      async_callback_method=None) -> BaseCycleQuery:
         """
         This method creates a cycle query that only returns new values. The `ConditionalCycleQuery` object is
         created, started and returned.
@@ -128,12 +131,14 @@ class BaseClientAPI(ABC):
         :param parameters_dict: dict of parameters to send witch request GET/PUT/etc...
         :param name: name of the subscription
         :param max_missed_msg: more information in :class:`.cycle_query.ConditionalCycleQuery`
+        :param ignore_errors: more information in :class:`.cycle_query.ConditionalCycleQuery`
         :param callback_method: method with one will be run after CycleQuery retrieve message from server
         :param async_callback_method: async method with one will be run after CycleQuery retrieve message from server
         :return:
         """
         cq = await self.subscribe(address=address, time_of_data_tolerance=time_of_data_tolerance, delay=delay,
-                                  parameters_dict=parameters_dict, name=name, max_missed_msg=max_missed_msg)
+                                  parameters_dict=parameters_dict, name=name, max_missed_msg=max_missed_msg,
+                                  ignore_errors=ignore_errors)
         if callback_method is not None:
             cq.add_callback_method(callback_method)
         if async_callback_method is not None:

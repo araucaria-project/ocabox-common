@@ -29,6 +29,8 @@ class BaseCycleQuery(ABC):
     :param query_name: cycle query name used to distinguish queries in logs
     :param max_missed_msg: number of missed messages before stop cycle query. Default is give from config. It can be
         set from -1 to inf. If it is ste to -1 that mean isn't max missed messages and query will be renewing all time
+    :param ignore_errors: flag to ignore errors. If the server returns an error other than temporary, the situation
+        will be treated as a failed attempt and will be re-requested.
     :raise CommunicationRuntimeError: if not provide async loop and czn not get existing loop
     """
 
@@ -37,10 +39,10 @@ class BaseCycleQuery(ABC):
     DEFAULT_REQUEST_TIMEOUT = 30
 
     def __init__(self, crs: BaseClientRequestSolver, list_request: List[ValueRequest], delay: float or None = None,
-                 loop=None, query_name: str = 'Default cycle query', max_missed_msg: int = None, **kwargs):
+                 loop=None, query_name: str = 'Default cycle query', max_missed_msg: int = None,
+                 ignore_errors: bool = False, **kwargs):
         self._query_name = query_name
         self._CRS: BaseClientRequestSolver = crs
-        # TODO sprawdziś czy nie ma problemów z synchronizacją przez Event
         self._event: asyncio.Event = asyncio.Event()
         self._last_response: List[ValueResponse] = []
         if delay is None or delay <= 0:
@@ -53,11 +55,13 @@ class BaseCycleQuery(ABC):
         self._loop = loop
         self._set_loop()  # can raise CommunicationRuntimeError
         self._list_request: List[ValueRequest] = list_request
-        self._additional_request_data = [{} for _ in range(len(self._list_request))]  # data to put to nex request in `request_data` dict
+        self._additional_request_data = [{} for _ in range(
+            len(self._list_request))]  # data to put to nex request in `request_data` dict
         self._errors: CommunicationRuntimeError or None = None
         self._callback_methods_a: list = []
         self._callback_methods: list = []
         self._callback_task: asyncio.Task or None = None
+        self._ignore_errors: bool = ignore_errors
 
     def get_name(self):
         return self._query_name
@@ -322,14 +326,16 @@ class ConditionalCycleQuery(BaseCycleQuery):
         set from -1 to inf. If it is ste to -1 that mean isn't max missed messages and query will be renewing all time
     :param request_timeout: The maximum waiting time for a response from the router, exceeding this time means that
         there are communication problems or the router is turned off. Recommended to leave the default value
+    :param ignore_errors: flag to ignore errors. If the server returns an error other than temporary, the situation
+        will be treated as a failed attempt and will be re-requested.
     :raise CommunicationRuntimeError: if not provide async loop and czn not get existing loop
     """
 
     def __init__(self, crs: BaseClientRequestSolver, list_request: List[ValueRequest], delay: float or None = None,
                  loop=None, query_name: str = 'Default conditional query', max_missed_msg: int = None,
-                 request_timeout: float = None, **kwargs):
+                 request_timeout: float = None, ignore_errors: bool = False, **kwargs):
         super().__init__(crs=crs, list_request=list_request, delay=delay, loop=loop,
-                         query_name=query_name, max_missed_msg=max_missed_msg, **kwargs)
+                         query_name=query_name, max_missed_msg=max_missed_msg, ignore_errors=ignore_errors, **kwargs)
         if request_timeout is None:
             request_timeout = self.DEFAULT_REQUEST_TIMEOUT
         self._timeout: float = request_timeout
@@ -375,6 +381,11 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         continue_while = True
                         break  # The server is returning a low priority error, need resubscribe
                     elif not r.status:  # One of the responses received has an error
+                        if self._ignore_errors:
+                            logger.warning(f'{self}: The cycle query retrieve response witch error: {str(r.error)}. '
+                                           f'Option ignore error is set.')
+                            continue_while = True
+                            break
                         raise CommunicationRuntimeError(message=f"Client retrieve response witch error: "
                                                                 f"{str(r.error)}")
 
