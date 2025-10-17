@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ocabox-common"
-version = "1.0.1"
+version = "1.0.2"
 license = "MIT"
 description = ""
 authors = ["Ernest Lasek <elasek@akond.com>, Mikołaj Kałuszyński <mkalusz@camk.edu.pl>"]
@@ -9,7 +9,7 @@ repository = "https://github.com/araucaria-project/ocabox-common"
 keywords = ["ocabox-common"]
 packages = [
     { include = "obcom" },
-    { include = "test" },
+#    { include = "test" },  # do not install tests with the package
 ]
 
 [tool.poetry.dependencies]
