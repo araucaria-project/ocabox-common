@@ -67,9 +67,7 @@ class TreeValueError(BaseCodedError):
     CODE_GROUP: int = 2000
     _KNOWN_LOCAL_CODES = [(1, 'Default Value error'),
                           (2, 'Error creating value'),
-                          (3, 'Too many retries to generate the value'),
-                          (4, 'Device Connection error'),
-                          ]
+                          (3, 'Too many retries to generate the value')]
 
     def __init__(self, value: Value or None = None, code: int = CODE_GROUP, message: str = "", severity: str = None,
                  **kwargs):
