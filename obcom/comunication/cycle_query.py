@@ -291,7 +291,7 @@ class PeriodicCycleQuery(BaseCycleQuery):
 
             except Exception as e:
                 self._last_response = []
-                logger.error(f'{self}: Unrecognized error in cycle query: {str(e)}')
+                logger.error(f'{self}: Unrecognized error in periodic cycle query: {type(e)}:{str(e)}', exc_info=True)
                 self._errors = CommunicationRuntimeError(message=f'Unrecognized error')
                 self._event.set()
                 break
@@ -417,7 +417,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 raise
             except Exception as e:
                 self._last_response = []
-                logger.error(f'{self}: Unrecognized error in cycle query: {str(e)}')
+                logger.error(f'{self}: Unrecognized error in conditional cycle query: {type(e)}:{str(e)}', exc_info=True)
                 self._errors = CommunicationRuntimeError(message=f'Unrecognized error')
                 self._event.set()
                 break
