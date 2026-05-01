@@ -139,6 +139,7 @@ class TreeOtherError(BaseCodedError):
                           (5, 'The module could not connect to the external service.'),
                           (6, 'Incorrectly calculated request timeout'),
                           (7, 'Wrong argument'),
+                          (8, 'Device busy with another operation in progress'),
                           ]
 
     def __init__(self, code: int = CODE_GROUP, message="", severity: str = None, **kwargs):
