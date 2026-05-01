@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 
+## [1.0.3]
+### Added
+- `TreeOtherError` code 4008: device busy with another operation in progress (e.g. camera mid-acquisition).
+
 ## [1.0.1]
 ### Changed
 - Configuration file system `confuse` removed. The current configuration system will be a server-only feature 
