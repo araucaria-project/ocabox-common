@@ -1,15 +1,65 @@
 import asyncio
 import logging
 import time
-from typing import List
+import warnings
+from typing import Dict, List, Optional
 
 from obcom.comunication.base_client_request_solver import BaseClientRequestSolver
 from obcom.comunication.comunication_error import CommunicationRuntimeError, CommunicationTimeoutError
+from obcom.comunication.error_policy import (
+    Backoff,
+    ErrorPolicy,
+    SeverityAction,
+    SeverityRule,
+    _LogPolicyState,
+)
 from obcom.data_colection.response_error import ResponseError
 from obcom.data_colection.value_call import ValueRequest, ValueResponse
 from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__.rsplit('.')[-1])
+
+
+class _SeverityRetryState:
+    """Per-severity bookkeeping for one subscription.
+
+    Tracks how many consecutive retries have happened for a given
+    severity and when the streak started, so :class:`Budget` and
+    :class:`LogPolicy` can do their work. Reset on every successful
+    response — a subscription that recovers, then later hits the same
+    severity again, gets the full first-N loud warnings rather than
+    being stuck in throttled mode forever.
+    """
+
+    __slots__ = ('attempts', 'started_monotonic', 'log_state')
+
+    def __init__(self, rule: SeverityRule) -> None:
+        self.attempts: int = 0
+        self.started_monotonic: float = time.monotonic()
+        self.log_state: _LogPolicyState = rule.log.make_state()
+
+    def reset(self, rule: SeverityRule) -> None:
+        self.attempts = 0
+        self.started_monotonic = time.monotonic()
+        self.log_state = rule.log.make_state()
+
+
+def _ignore_errors_to_policy(ignore_errors: bool) -> ErrorPolicy:
+    """Translate the legacy ``ignore_errors`` flag into a policy.
+
+    ``True`` was historically equivalent to "retry non-TEMPORARY errors
+    forever, exactly like TEMPORARY"; ``False`` was the GUI-friendly
+    default. Map onto the matching presets so existing callers see no
+    behaviour change while we transition them to ``error_policy=``.
+    """
+    if ignore_errors:
+        return ErrorPolicy.INTERACTIVE.with_overrides(
+            normal=SeverityRule(action=SeverityAction.RETRY,
+                                backoff=Backoff.immediate()),
+            critical=SeverityRule(action=SeverityAction.RETRY,
+                                  backoff=Backoff.immediate()),
+        )
+    return ErrorPolicy.INTERACTIVE
 
 
 class BaseCycleQuery(ABC):
@@ -40,7 +90,7 @@ class BaseCycleQuery(ABC):
 
     def __init__(self, crs: BaseClientRequestSolver, list_request: List[ValueRequest], delay: float or None = None,
                  loop=None, query_name: str = 'Default cycle query', max_missed_msg: int = None,
-                 ignore_errors: bool = False, **kwargs):
+                 ignore_errors: bool = False, error_policy: Optional[ErrorPolicy] = None, **kwargs):
         self._query_name = query_name
         self._CRS: BaseClientRequestSolver = crs
         self._event: asyncio.Event = asyncio.Event()
@@ -61,7 +111,28 @@ class BaseCycleQuery(ABC):
         self._callback_methods_a: list = []
         self._callback_methods: list = []
         self._callback_task: asyncio.Task or None = None
-        self._ignore_errors: bool = ignore_errors
+        # Resolve error policy. ``error_policy`` is the new public API;
+        # ``ignore_errors`` is preserved for one release and translated
+        # automatically when the new parameter is not set.
+        if error_policy is not None and ignore_errors:
+            warnings.warn(
+                "Both 'error_policy' and 'ignore_errors' were set; 'ignore_errors' is ignored. "
+                "'ignore_errors' is deprecated; use 'error_policy=ErrorPolicy.SERVICE' "
+                "(or another preset) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        elif ignore_errors:
+            warnings.warn(
+                "'ignore_errors' is deprecated; use 'error_policy=ErrorPolicy.SERVICE' "
+                "(or another preset) for daemons, or omit for the GUI-friendly default.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if error_policy is None:
+            error_policy = _ignore_errors_to_policy(ignore_errors)
+        self._error_policy: ErrorPolicy = error_policy
+        self._severity_state: Dict[str, _SeverityRetryState] = {}
 
     def get_name(self):
         return self._query_name
@@ -333,9 +404,11 @@ class ConditionalCycleQuery(BaseCycleQuery):
 
     def __init__(self, crs: BaseClientRequestSolver, list_request: List[ValueRequest], delay: float or None = None,
                  loop=None, query_name: str = 'Default conditional query', max_missed_msg: int = None,
-                 request_timeout: float = None, ignore_errors: bool = False, **kwargs):
+                 request_timeout: float = None, ignore_errors: bool = False,
+                 error_policy: Optional[ErrorPolicy] = None, **kwargs):
         super().__init__(crs=crs, list_request=list_request, delay=delay, loop=loop,
-                         query_name=query_name, max_missed_msg=max_missed_msg, ignore_errors=ignore_errors, **kwargs)
+                         query_name=query_name, max_missed_msg=max_missed_msg,
+                         ignore_errors=ignore_errors, error_policy=error_policy, **kwargs)
         if request_timeout is None:
             request_timeout = self.DEFAULT_REQUEST_TIMEOUT
         self._timeout: float = request_timeout
@@ -367,38 +440,104 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 self._last_response = result
                 missed = 0
                 not_clear_result = True  # if it gets some result return it for callback
-                # check errors
-                continue_while = False  # this parameter is needed to continue the outer loop
+                # ----- Error dispatch driven by self._error_policy -----
+                # See ``error_policy.py`` for the action vocabulary
+                # (RETRY / NOTIFY / STOP) and the per-severity rules. The
+                # legacy ``ignore_errors`` flag is mapped onto a policy
+                # at construction time, so this block only consults the
+                # policy.
+                continue_while = False           # outer-loop "go again, no callback fire"
+                notify_then_continue = False     # outer-loop "fire callback first, then go again"
+                retry_delay = 0.0                # backoff sleep before next attempt (RETRY/NOTIFY)
+                successful_response = True       # reset per-severity state if no error
                 for r in self._last_response:
-                    if not r.status and r.error and r.error.code == 4004:  # 4004 - timeout waiting for change value
-                        # the value is not changed so client need refresh request and keep waiting
+                    if r.status:
+                        continue
+                    successful_response = False
+                    # 4004 (subscription expired) is a protocol heartbeat,
+                    # not really an error — keep its dedicated silent retry.
+                    if r.error and r.error.code == 4004:
                         logger.debug(f'{self}: address ({str(r.address)}) subscription expired - renewing')
-                        continue_while = True  # continue outer loop
-                        break  # everything is ok, just router need confirmation that the client is alive
-                    elif not r.status and r.error and r.error.severity == ResponseError.SEVERITY_TEMPORARY:
-                        logger.warning(f'{self}: address ({str(r.address)}) subscription return error severity: '
-                                       f'{ResponseError.SEVERITY_TEMPORARY}. Error message: {r.error.message}')
                         continue_while = True
-                        break  # The server is returning a low priority error, need resubscribe
-                    elif not r.status:  # One of the responses received has an error
-                        if self._ignore_errors:
-                            logger.warning(f'{self}: The cycle query retrieve response witch error: {str(r.error)}. '
-                                           f'Option ignore error is set.')
-                            continue_while = True
-                            break
-                        raise CommunicationRuntimeError(message=f"Client retrieve response witch error: "
-                                                                f"{str(r.error)}")
-
-                    elif r.value is not None and 'from_cf' not in r.value.tags:
-                        logger.info(f'{self}: this address ({str(r.address)}) does not support cycle '
-                                    f'conditional')
-                        raise CommunicationRuntimeError(message=f"this address ({str(r.address)}) does not support "
-                                                                f"recursive conditional queries")
-                    elif r.value is None:
-                        logger.info(f'{self}: this address ({str(r.address)}) does not return any value')
-                        raise CommunicationRuntimeError(message=f"this address ({str(r.address)}) does not return any "
-                                                                f"value")
+                        break
+                    if r.error is None:
+                        # Response carried ``status=False`` without an
+                        # error object — preserve the historical "stop"
+                        # behaviour for that, since we have no severity
+                        # to dispatch on.
+                        raise CommunicationRuntimeError(
+                            message=f"Client retrieve response without error object: {str(r)}")
+                    severity = r.error.severity or ResponseError.SEVERITY_NORMAL
+                    rule = self._error_policy.rule_for(severity)
+                    state = self._severity_state.get(severity)
+                    if state is None:
+                        state = _SeverityRetryState(rule)
+                        self._severity_state[severity] = state
+                    state.attempts += 1
+                    action = rule.action
+                    # Convert RETRY/NOTIFY → STOP if the budget is spent.
+                    if (action != SeverityAction.STOP and rule.budget is not None
+                            and rule.budget.is_exhausted(state.attempts, state.started_monotonic)):
+                        logger.warning(
+                            f'{self}: address ({str(r.address)}) retry budget exhausted '
+                            f'(severity={severity}, attempts={state.attempts}); stopping subscription'
+                        )
+                        action = SeverityAction.STOP
+                    if action == SeverityAction.STOP:
+                        raise CommunicationRuntimeError(
+                            message=f"Client retrieve response with error: {str(r.error)}")
+                    # RETRY or NOTIFY: log according to the rule's
+                    # throttle (always emit DEBUG for forensics).
+                    msg = (f'{self}: address ({str(r.address)}) error severity={severity} '
+                           f'code={r.error.code}: {r.error.message} — retrying '
+                           f'(attempt {state.attempts}, action={action.value})')
+                    if state.log_state.should_warn():
+                        logger.warning(msg)
+                    else:
+                        logger.debug(msg)
+                    retry_delay = max(retry_delay, rule.backoff.delay(state.attempts))
+                    if action == SeverityAction.NOTIFY:
+                        notify_then_continue = True
+                    else:
+                        continue_while = True
+                    break
+                else:
+                    # for-else: no break taken, all responses were either
+                    # status=True or non-error continuation cases. Fall
+                    # through to the value/None checks below.
+                    pass
+                # Apply per-response value/protocol checks for the
+                # status=True path (these mirror the historical code).
+                if not continue_while and not notify_then_continue:
+                    for r in self._last_response:
+                        if not r.status:
+                            continue
+                        if r.value is not None and 'from_cf' not in r.value.tags:
+                            logger.info(f'{self}: this address ({str(r.address)}) does not support cycle '
+                                        f'conditional')
+                            raise CommunicationRuntimeError(
+                                message=f"this address ({str(r.address)}) does not support "
+                                        f"recursive conditional queries")
+                        if r.value is None:
+                            logger.info(f'{self}: this address ({str(r.address)}) does not return any value')
+                            raise CommunicationRuntimeError(
+                                message=f"this address ({str(r.address)}) does not return any value")
+                # All responses were successful → reset per-severity state
+                # so the next failure starts the loud-warning streak fresh.
+                if successful_response and self._severity_state:
+                    self._severity_state.clear()
+                if notify_then_continue:
+                    # Fire callback with the error response, then keep
+                    # retrying in the next loop iteration.
+                    self._event.set()
+                    if retry_delay > 0:
+                        await asyncio.sleep(retry_delay)
+                    await asyncio.sleep(0)
+                    self._event.clear()
+                    continue
                 if continue_while:
+                    if retry_delay > 0:
+                        await asyncio.sleep(retry_delay)
                     await asyncio.sleep(0)
                     continue
                 self._event.set()
