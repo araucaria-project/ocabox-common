@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 
+## [1.1.0]
+### Added
+- `obcom.comunication.error_policy`: per-severity `ErrorPolicy` for cycle queries.
+  Each subscription declares — once at subscribe time — what action
+  (`RETRY` / `NOTIFY` / `STOP`), backoff (`Backoff.immediate/fixed/exponential/staged`),
+  retry budget (`Budget`) and log throttle (`LogPolicy`) applies to
+  `TEMPORARY` / `NORMAL` / `CRITICAL` errors. Three presets cover the
+  common cases:
+  - `ErrorPolicy.INTERACTIVE` (default) — GUI-friendly, `NORMAL` stops
+    the subscription so the human can react.
+  - `ErrorPolicy.SERVICE` — long-running daemons; `NORMAL` is auto-retried
+    with a staged backoff (2s × 3 → 10s × 6 → 60s forever) and per-attempt
+    warnings throttled to 3 loud + 1/hour.
+  - `ErrorPolicy.FAIL_FAST` — short-lived tools / tests.
+  Plumbed through `ConditionalCycleQuery`, `BaseClientAPI.subscribe`,
+  and `BaseClientAPI.subscribe_with_callback`.
+### Deprecated
+- `ignore_errors=True` on cycle-query constructors and `subscribe*`
+  helpers. Pass `error_policy=ErrorPolicy.SERVICE` (or another preset)
+  instead. Still honoured for one release with a `DeprecationWarning`.
+
 ## [1.0.3]
 ### Added
 - `TreeOtherError` code 4008: device busy with another operation in progress (e.g. camera mid-acquisition).
