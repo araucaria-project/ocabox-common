@@ -270,19 +270,37 @@ class BaseCycleQuery(ABC):
 
             for a_method in self._callback_methods_a:
                 if callable(a_method):
+                    logger.debug(f"{self}: Execute callback {a_method.__name__}")
                     try:
-                        logger.debug(f"{self}: Execute callback {a_method.__name__}")
                         await a_method(result)
-                    except TypeError as e:
-                        logger.error(f"Error in callback method {a_method.__name__}. Error: {e}")
+                    except Exception as e:
+                        # Catch broadly so a buggy callback cannot kill the
+                        # callback runner task. If the exception escapes this
+                        # try-except block, the task dies silently — the producer keeps
+                        # polling (so is_stopped() stays False and no
+                        # SUBSCRIPTION STOPPED log appears) but no further
+                        # callbacks fire, leaving downstream consumers with
+                        # stale data and no diagnostic signal.
+                        #
+                        # Do NOT widen to BaseException: CancelledError must
+                        # propagate so task cancellation works correctly
+                        # (CancelledError is BaseException since Python 3.8).
+                        logger.exception(
+                            f"{self}: async callback {a_method.__name__} raised "
+                            f"unhandled {type(e).__name__}: {e}. Continuing — the "
+                            f"subscription stays alive."
+                        )
 
             for method in self._callback_methods:
                 if callable(method):
+                    logger.debug(f"{self}: Execute callback {method.__name__}")
                     try:
-                        logger.debug(f"{self}: Execute callback {method.__name__}")
                         method(result)
-                    except TypeError as e:
-                        logger.error(f"Error in callback method {method.__name__}. Error: {e}")
+                    except Exception as e:
+                        logger.exception(
+                            f"{self}: sync callback {method.__name__} raised "
+                            f"unhandled {type(e).__name__}: {e}. Continuing."
+                        )
 
 
 class PeriodicCycleQuery(BaseCycleQuery):
