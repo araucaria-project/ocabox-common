@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 
+## [1.1.1]
+### Fixed
+- `ConditionalCycleQuery._execute_callbacks`: silent callback-runner death
+  on non-`TypeError` exceptions. The handler now catches `Exception` (not
+  just `TypeError`) and logs with `logger.exception` for full traceback.
+  `CancelledError` continues to propagate so task cancellation works.
+  Pre-fix symptom: a buggy callback raising e.g. `IndexError` killed the
+  callback runner task without logging — the producer kept polling, no
+  `SUBSCRIPTION STOPPED` log appeared, and downstream consumers saw stale
+  data forever (observed as `tic.status.jk15.camera.camerastate` stuck on
+  NATS for 7+ hours while server-side direct GET returned the correct value).
+
 ## [1.1.0]
 ### Added
 - `obcom.comunication.error_policy`: per-severity `ErrorPolicy` for cycle queries.
