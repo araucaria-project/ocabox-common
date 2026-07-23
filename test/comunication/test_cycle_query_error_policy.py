@@ -13,8 +13,10 @@ asyncio.timeout to keep the suite quick.
 import asyncio
 import unittest
 from typing import List
+from unittest.mock import patch
 
-from obcom.comunication.cycle_query import ConditionalCycleQuery
+from obcom.comunication.cycle_query import ConditionalCycleQuery, PeriodicCycleQuery
+import obcom.comunication.cycle_query as cq_mod
 from obcom.comunication.error_policy import (
     Backoff,
     Budget,
@@ -273,7 +275,6 @@ class TestCatchAllExceptionHandling(unittest.IsolatedAsyncioTestCase):
 
     async def test_service_policy_survives_unexpected_exception(self):
         """Under SERVICE policy, an unexpected exception keeps the loop alive."""
-        import obcom.comunication.cycle_query as cq_mod
 
         class RaisingThenOkSolver:
             """Raises RuntimeError on the first call, then returns a success."""
@@ -301,13 +302,8 @@ class TestCatchAllExceptionHandling(unittest.IsolatedAsyncioTestCase):
 
         cq.add_callback_async_method(on_msg)
 
-        # Patch the catch-all delay to 0 so the test doesn't take 60 s.
-        original_delay = cq_mod._CATCH_ALL_RETRY_DELAY
-        cq_mod._CATCH_ALL_RETRY_DELAY = 0.0
-        try:
+        with patch.object(cq_mod, '_CATCH_ALL_RETRY_DELAY', 0.0):
             await _run_cq_until(cq, callback_calls=callback_calls, target_calls=1, timeout=2.0)
-        finally:
-            cq_mod._CATCH_ALL_RETRY_DELAY = original_delay
 
         await cq.stop_and_wait()
         # The subscription must have survived the unexpected exception and
@@ -318,9 +314,45 @@ class TestCatchAllExceptionHandling(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(callback_calls[0][0].status,
                         "the callback must carry the success response (v=99)")
 
+    async def test_periodic_service_policy_survives_unexpected_exception(self):
+        """PeriodicCycleQuery: SERVICE policy keeps the loop alive after an unexpected exception."""
+
+        class RaisingThenOkSolver:
+            def __init__(self):
+                self._calls = 0
+
+            async def send_request(self, requests, timeout=None, no_wait=False):
+                self._calls += 1
+                await asyncio.sleep(0)
+                if self._calls == 1:
+                    raise RuntimeError("synthetic unexpected error in periodic")
+                return [make_ok_response(v=42)]
+
+        solver = RaisingThenOkSolver()
+        cq = PeriodicCycleQuery(crs=solver, list_request=[make_request()],
+                                delay=0.01, error_policy=ErrorPolicy.SERVICE)
+        callback_calls = []
+
+        async def on_msg(resp):
+            callback_calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+
+        with patch.object(cq_mod, '_CATCH_ALL_RETRY_DELAY', 0.0):
+            cq.start()
+            deadline = asyncio.get_event_loop().time() + 2.0
+            while len(callback_calls) < 1 and asyncio.get_event_loop().time() < deadline:
+                await asyncio.sleep(0.005)
+            cq.stop()
+
+        await cq.stop_and_wait()
+        self.assertGreaterEqual(len(callback_calls), 1,
+                                "PeriodicCycleQuery should survive unexpected exception under SERVICE policy")
+        self.assertTrue(callback_calls[0][0].status,
+                        "the callback must carry the success response (v=42)")
+
     async def test_interactive_policy_stops_on_unexpected_exception(self):
         """Under INTERACTIVE policy, an unexpected exception still breaks the loop."""
-        import obcom.comunication.cycle_query as cq_mod
 
         class AlwaysRaisingSolver:
             async def send_request(self, requests, timeout=None, no_wait=False):
@@ -340,10 +372,12 @@ class TestCatchAllExceptionHandling(unittest.IsolatedAsyncioTestCase):
         # Give enough time for the exception to fire and the loop to break.
         await asyncio.sleep(0.2)
         await cq.stop_and_wait()
-        # Under INTERACTIVE policy the subscription should be dead after
-        # an unrecognized exception — is_stopped() / errors set.
-        self.assertTrue(cq.is_stopped() or cq.errors is not None,
-                        "INTERACTIVE policy should break the subscription on unexpected exception")
+        # Under INTERACTIVE policy the subscription should be dead and have
+        # an error set — both conditions must hold.
+        self.assertTrue(cq.is_stopped(),
+                        "INTERACTIVE policy should stop the subscription on unexpected exception")
+        self.assertIsNotNone(cq._errors,
+                             "INTERACTIVE policy should set _errors on unexpected exception")
 
 
 class TestLegacyIgnoreErrorsCompat(unittest.IsolatedAsyncioTestCase):
