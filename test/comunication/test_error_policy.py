@@ -40,6 +40,17 @@ class TestBackoff(unittest.TestCase):
         self.assertEqual(bo.delay(5), 10.0)  # capped
         self.assertEqual(bo.delay(20), 10.0)
 
+    def test_exponential_no_overflow_at_very_large_attempt(self):
+        # Regression test: attempt >1024 with factor=2.0 used to raise
+        # OverflowError (2.0 ** 1024 overflows float) before the min()
+        # clamp could fire.  After the fix it must silently return the
+        # ceiling regardless of how large attempt is.
+        bo = Backoff.exponential(initial=0.1, ceiling=5.0, factor=2.0)
+        for attempt in (1025, 2000, 10_000, 100_000):
+            result = bo.delay(attempt)   # must not raise
+            self.assertEqual(result, 5.0,
+                             f"attempt={attempt}: expected ceiling 5.0, got {result}")
+
     def test_staged_walks_through_stages(self):
         # 2s × 3, 10s × 5, then 60s forever
         bo = Backoff.staged([(2.0, 3), (10.0, 5), (60.0, None)])

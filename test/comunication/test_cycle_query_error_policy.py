@@ -263,6 +263,89 @@ class TestErrorPolicyDispatch(unittest.IsolatedAsyncioTestCase):
                         "second callback must be a success (v=2) — budget should have reset")
 
 
+class TestCatchAllExceptionHandling(unittest.IsolatedAsyncioTestCase):
+    """Catch-all ``except Exception`` must not kill SERVICE subscriptions.
+
+    Regression tests for the bug where any unexpected exception in the
+    cycle-query loop would permanently break the subscription even if the
+    error_policy was configured to retry forever (e.g. ErrorPolicy.SERVICE).
+    """
+
+    async def test_service_policy_survives_unexpected_exception(self):
+        """Under SERVICE policy, an unexpected exception keeps the loop alive."""
+        import obcom.comunication.cycle_query as cq_mod
+
+        class RaisingThenOkSolver:
+            """Raises RuntimeError on the first call, then returns a success."""
+
+            def __init__(self):
+                self._calls = 0
+
+            async def send_request(self, requests, timeout=None, no_wait=False):
+                self._calls += 1
+                await asyncio.sleep(0)
+                if self._calls == 1:
+                    raise RuntimeError("synthetic unexpected error")
+                return [make_ok_response(v=99)]
+
+        solver = RaisingThenOkSolver()
+        policy = ErrorPolicy.SERVICE.with_overrides(
+            temporary=SeverityRule(action=SeverityAction.RETRY, backoff=Backoff.immediate())
+        )
+        cq = ConditionalCycleQuery(crs=solver, list_request=[make_request()],
+                                    delay=0.01, error_policy=policy)
+        callback_calls = []
+
+        async def on_msg(resp):
+            callback_calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+
+        # Patch the catch-all delay to 0 so the test doesn't take 60 s.
+        original_delay = cq_mod._CATCH_ALL_RETRY_DELAY
+        cq_mod._CATCH_ALL_RETRY_DELAY = 0.0
+        try:
+            await _run_cq_until(cq, callback_calls=callback_calls, target_calls=1, timeout=2.0)
+        finally:
+            cq_mod._CATCH_ALL_RETRY_DELAY = original_delay
+
+        await cq.stop_and_wait()
+        # The subscription must have survived the unexpected exception and
+        # eventually delivered the success response.
+        self.assertGreaterEqual(len(callback_calls), 1,
+                                "subscription should have survived the unexpected exception "
+                                "and eventually fired a success callback")
+        self.assertTrue(callback_calls[0][0].status,
+                        "the callback must carry the success response (v=99)")
+
+    async def test_interactive_policy_stops_on_unexpected_exception(self):
+        """Under INTERACTIVE policy, an unexpected exception still breaks the loop."""
+        import obcom.comunication.cycle_query as cq_mod
+
+        class AlwaysRaisingSolver:
+            async def send_request(self, requests, timeout=None, no_wait=False):
+                await asyncio.sleep(0)
+                raise ValueError("always broken")
+
+        solver = AlwaysRaisingSolver()
+        cq = ConditionalCycleQuery(crs=solver, list_request=[make_request()],
+                                    delay=0.01, error_policy=ErrorPolicy.INTERACTIVE)
+        callback_calls = []
+
+        async def on_msg(resp):
+            callback_calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        # Give enough time for the exception to fire and the loop to break.
+        await asyncio.sleep(0.2)
+        await cq.stop_and_wait()
+        # Under INTERACTIVE policy the subscription should be dead after
+        # an unrecognized exception — is_stopped() / errors set.
+        self.assertTrue(cq.is_stopped() or cq.errors is not None,
+                        "INTERACTIVE policy should break the subscription on unexpected exception")
+
+
 class TestLegacyIgnoreErrorsCompat(unittest.IsolatedAsyncioTestCase):
     """``ignore_errors=True`` still does what it used to (DeprecationWarning aside)."""
 

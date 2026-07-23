@@ -118,7 +118,15 @@ class _ExponentialBackoff(Backoff):
         # ``initial * factor``, etc., capped by ``ceiling``.
         if attempt < 1:
             attempt = 1
-        raw = self.initial * (self.factor ** (attempt - 1))
+        # Guard against OverflowError when attempt is very large (e.g.
+        # after thousands of retries during a multi-day outage).  At the
+        # point where the un-clamped result would already exceed ceiling,
+        # there is no need to exponentiate further — just return the
+        # ceiling directly.
+        try:
+            raw = self.initial * (self.factor ** (attempt - 1))
+        except OverflowError:
+            return self.ceiling
         return min(raw, self.ceiling)
 
 
