@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 
+## [1.2.0]
+### Fixed
+- `_ExponentialBackoff.delay()`: guard `OverflowError` from `float ** int` at
+  ~1024 consecutive retries — now returns `ceiling` immediately on overflow
+  instead of raising and escaping to the caller.
+- `ConditionalCycleQuery` / `PeriodicCycleQuery` catch-all `except Exception`:
+  under `ErrorPolicy.SERVICE` (and any policy whose `normal.action != STOP`)
+  the handler now sleeps `_CATCH_ALL_RETRY_DELAY` (60 s) and continues the
+  subscription loop instead of breaking permanently. `INTERACTIVE` and
+  `FAIL_FAST` retain the existing stop-on-unknown behaviour.
+- Catch-all log messages throttled via `_catch_all_log_state` (respects the
+  `LogPolicy` from `error_policy.normal.log`) to prevent log flooding under
+  SERVICE on persistent unexpected exceptions (~1.4 k/day → 3 loud + 1/hour).
+
 ## [1.1.1]
 ### Fixed
 - `ConditionalCycleQuery._execute_callbacks`: silent callback-runner death

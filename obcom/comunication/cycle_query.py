@@ -19,6 +19,11 @@ from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__.rsplit('.')[-1])
 
+# Delay used in the catch-all ``except Exception`` handler when the policy
+# is SERVICE-style (i.e. NORMAL action = RETRY).  Exposed as a module
+# constant so tests can patch it to 0 without touching asyncio.sleep.
+_CATCH_ALL_RETRY_DELAY = 60.0
+
 
 class _SeverityRetryState:
     """Per-severity bookkeeping for one subscription.
@@ -133,6 +138,11 @@ class BaseCycleQuery(ABC):
             error_policy = _ignore_errors_to_policy(ignore_errors)
         self._error_policy: ErrorPolicy = error_policy
         self._severity_state: Dict[str, _SeverityRetryState] = {}
+        # Per-subscription log-throttle state for the catch-all exception
+        # handler, derived from the normal rule's LogPolicy so SERVICE
+        # daemons get the same first_n=3/then_every_seconds=3600 behaviour
+        # they already use for structured errors.
+        self._catch_all_log_state: _LogPolicyState = error_policy.normal.log.make_state()
 
     def get_name(self):
         return self._query_name
@@ -380,8 +390,15 @@ class PeriodicCycleQuery(BaseCycleQuery):
 
             except Exception as e:
                 self._last_response = []
-                logger.error(f'{self}: Unrecognized error in periodic cycle query: {type(e)}:{str(e)}', exc_info=True)
-                self._errors = CommunicationRuntimeError(message=f'Unrecognized error')
+                msg = f'{self}: Unrecognized error in periodic cycle query: {type(e)}:{str(e)}'
+                if self._catch_all_log_state.should_warn():
+                    logger.error(msg, exc_info=True)
+                else:
+                    logger.debug(msg, exc_info=True)
+                if self._error_policy.normal.action != SeverityAction.STOP:
+                    await asyncio.sleep(_CATCH_ALL_RETRY_DELAY)
+                    continue
+                self._errors = CommunicationRuntimeError(message='Unrecognized error')
                 self._event.set()
                 break
 
@@ -574,8 +591,22 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 raise
             except Exception as e:
                 self._last_response = []
-                logger.error(f'{self}: Unrecognized error in conditional cycle query: {type(e)}:{str(e)}', exc_info=True)
-                self._errors = CommunicationRuntimeError(message=f'Unrecognized error')
+                # Under a SERVICE-style policy (NORMAL action = RETRY), an
+                # unexpected exception must not permanently kill the
+                # subscription — a daemon is explicitly configured to
+                # "retry forever", so breaking here defeats the whole
+                # purpose.  Sleep a safe ceiling delay and keep the loop
+                # alive so the subscription can recover once the underlying
+                # condition clears.
+                msg = f'{self}: Unrecognized error in conditional cycle query: {type(e)}:{str(e)}'
+                if self._catch_all_log_state.should_warn():
+                    logger.error(msg, exc_info=True)
+                else:
+                    logger.debug(msg, exc_info=True)
+                if self._error_policy.normal.action != SeverityAction.STOP:
+                    await asyncio.sleep(_CATCH_ALL_RETRY_DELAY)
+                    continue
+                self._errors = CommunicationRuntimeError(message='Unrecognized error')
                 self._event.set()
                 break
             if missed >= self._max_missed_msg >= 0:
