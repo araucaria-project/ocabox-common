@@ -3,6 +3,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.2.2]
+### Fixed
+- `TreeStructureError.__init__` accepted `severity` but never forwarded it to
+  `super().__init__()`, silently demoting every `TreeStructureError` to
+  `NORMAL`. Connectors raising `3002` ("method not implemented") as
+  `CRITICAL` — a permanent condition that should stop client subscriptions —
+  actually produced `NORMAL`, so `ErrorPolicy.SERVICE` clients retried forever
+  against endpoints that can never succeed. Found 2026-06-20, regression test
+  added (`test_coded_error.py`) covering all coded-error classes.
+
 ## [1.2.1]
 ### Added
 - `TreeOtherError` code **4009 "Device reported an error"**. Distinguishes a

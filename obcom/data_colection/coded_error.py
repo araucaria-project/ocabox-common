@@ -127,7 +127,7 @@ class TreeStructureError(BaseCodedError):
                           (2, 'Component has not implemented method or method work incorrect')]
 
     def __init__(self, code: int = CODE_GROUP, message="", severity: str = None, **kwargs):
-        super().__init__(message=message, code=code, **kwargs)
+        super().__init__(message=message, code=code, severity=severity, **kwargs)
 
 
 class TreeOtherError(BaseCodedError):
