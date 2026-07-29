@@ -3,6 +3,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.2.1]
+### Added
+- `TreeOtherError` code **4009 "Device reported an error"**. Distinguishes a
+  fault *reported by an instrument/driver* (the server worked and faithfully
+  relayed a device error) from a TIC-internal value-build failure (`2002`).
+  Connectors should raise `TreeOtherError(code=4009, message=<device msg>,
+  severity=NORMAL, device_errno=<numeric driver code, optional>)`. The
+  `device_errno` rides in `kwargs` and round-trips through
+  `ResponseError.from_coded_error` to the client unchanged, so clients no
+  longer have to parse the message string or read server logs to learn what
+  the device said.
 
 ## [1.2.0]
 ### Fixed
