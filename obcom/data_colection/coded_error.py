@@ -140,6 +140,7 @@ class TreeOtherError(BaseCodedError):
                           (6, 'Incorrectly calculated request timeout'),
                           (7, 'Wrong argument'),
                           (8, 'Device busy with another operation in progress'),
+                          (9, 'Device reported an error'),
                           ]
 
     def __init__(self, code: int = CODE_GROUP, message="", severity: str = None, **kwargs):

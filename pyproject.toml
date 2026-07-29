@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "ocabox-common"
 # When bumping the version, also update: ocabox-common_bases.py __version_num__
-version = "1.2.0"
+version = "1.2.1"
 license = "MIT"
 description = ""
 authors = ["Ernest Lasek <elasek@akond.com>, Mikołaj Kałuszyński <mkalusz@camk.edu.pl>"]
