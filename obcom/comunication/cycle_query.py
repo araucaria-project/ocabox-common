@@ -465,6 +465,21 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 # it and a healthy system's cadence stays governed by T1.
                 if r.time_of_data_max_age is None:
                     r.time_of_data_max_age = 2 * r.time_of_data_tolerance
+        if self._stale_opt_in:
+            # The long-poll window must not exceed the truth bound: while a
+            # request is in flight the client is blind, so a dead router would
+            # only be noticed at the request timeout. Capping the window at T2
+            # bounds that detection latency; on a healthy connection the 4004
+            # renewals then arrive within T2 and keep the contact clock alive
+            # (no false staleness, old or new server). Floor of 1s so a very
+            # tight T2 does not turn into a renewal storm.
+            tightest_t2 = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
+                              for r in self._list_request)
+            window = max(1.0, tightest_t2)
+            if window < self._timeout:
+                self._timeout = window
+                for r in self._list_request:
+                    r.request_timeout = self._timeout
         # Last truthful value per request — feeds last_good/last_good_ts
         # tags of a synthesized stale-None.
         self._last_good: List[Optional[Value]] = [None] * len(self._list_request)
@@ -512,17 +527,23 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 # rich stale-None delivered by a >=2.6 server (v=None +
                 # reason tag) is also healthy contact — and it means the
                 # consumer is already informed, so client-side synthesis
-                # must not duplicate it.
+                # must not duplicate it. Classification is order-independent:
+                # batch-wide flags are decided after scanning the whole batch.
+                saw_value = saw_server_none = False
                 for i, resp in enumerate(result[:len(self._last_good)]):
                     if resp.status and resp.value is not None:
                         if resp.value.v is not None:
                             self._last_good[i] = resp.value
-                            self._last_contact_ts = time.monotonic()
-                            self._stale_delivered = False
-                            self._timeout_log_state.reset()
+                            saw_value = True
                         elif 'reason' in resp.value.tags:
-                            self._last_contact_ts = time.monotonic()
-                            self._stale_delivered = True
+                            saw_server_none = True
+                if saw_value or saw_server_none:
+                    self._last_contact_ts = time.monotonic()
+                if saw_value:
+                    self._stale_delivered = False
+                    self._timeout_log_state.reset()
+                elif saw_server_none:
+                    self._stale_delivered = True
                 # ----- Error dispatch driven by self._error_policy -----
                 # See ``error_policy.py`` for the action vocabulary
                 # (RETRY / NOTIFY / STOP) and the per-severity rules. The

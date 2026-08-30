@@ -282,6 +282,55 @@ class TestMaxAgeWire(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(calls[1][0].value.v)
 
 
+class HangingSolver:
+    """Never answers; honors the absolute timeout like the real CRS does."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def send_request(self, requests, timeout=None, no_wait=False):
+        import time as _time
+        self.calls += 1
+        delay = (timeout - _time.time()) if timeout else 3600  # timeout is absolute wall clock
+        await asyncio.sleep(delay if delay > 0 else 3600)
+        from obcom.comunication.comunication_error import CommunicationTimeoutError as _CTE
+        raise _CTE(message='router silent')
+
+
+class TestLongPollWindowCap(unittest.IsolatedAsyncioTestCase):
+
+    async def test_window_capped_at_t2_bounds_detection_latency(self):
+        """A declared subscription must notice a dead router within ~T2, not
+        within the default 30s request timeout (the client is blind while a
+        long-poll is in flight)."""
+        request = make_request(tolerance=0.6)
+        request.time_of_data_max_age = 1.2
+        crs = HangingSolver()
+        cq = ConditionalCycleQuery(crs=crs, list_request=[request],
+                                   delay=0.01, error_policy=NONE_POLICY)  # default 30s timeout
+        self.assertLessEqual(cq._timeout, 1.2, 'long-poll window must be capped at T2')
+        calls, t0 = [], asyncio.get_event_loop().time()
+        stamps = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+            stamps.append(asyncio.get_event_loop().time() - t0)
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=1, timeout=4.0)
+        await cq.stop_and_wait()
+        self.assertEqual(len(calls) >= 1, True, 'no stale-None despite a silent router')
+        self.assertIsNone(calls[0][0].value.v)
+        self.assertLess(stamps[0], 2.5,
+                        f'stale-None at +{stamps[0]:.2f}s — detection not bounded by T2')
+
+    async def test_window_not_touched_for_undeclared(self):
+        cq = ConditionalCycleQuery(crs=HangingSolver(), list_request=[make_request()],
+                                   delay=0.01, error_policy=ErrorPolicy.SERVICE)
+        self.assertEqual(cq._timeout, cq.DEFAULT_REQUEST_TIMEOUT)
+        cq.stop()
+
+
 class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
 
     async def test_router_silence_beyond_tolerance_delivers_stale_none_once(self):
