@@ -471,13 +471,14 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # True after a stale-None was delivered; reset by the next real
         # value so each staleness episode wakes the client exactly once.
         self._stale_delivered: bool = False
-        # The tolerance clock runs from the last *healthy contact* — a
-        # batch of real values or a 4004 long-poll renewal (server alive,
-        # value unchanged-and-fresh). It deliberately does NOT run from
-        # the last value *change*: a value stable for days, confirmed by
-        # renewals, is perfectly truthful. Error batches and router
-        # silence do not touch this clock.
-        self._last_contact_ts: float = time.time()
+        # The T2 clock runs from the last *healthy contact* — a batch of
+        # real values or a 4004 long-poll renewal (server alive, value
+        # unchanged-and-fresh). It deliberately does NOT run from the last
+        # value *change*: a value stable for days, confirmed by renewals,
+        # is perfectly truthful. Error batches and router silence do not
+        # touch this clock. Monotonic: immune to NTP/manual clock jumps
+        # (wall clock is used only for the emitted Value.ts).
+        self._last_contact_ts: float = time.monotonic()
         # Router-silence warnings are throttled for opted-in subscriptions
         # (the tolerance clock, not the operator, owns the outage there).
         self._timeout_log_state: _LogPolicyState = self._error_policy.normal.log.make_state()
@@ -516,11 +517,11 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     if resp.status and resp.value is not None:
                         if resp.value.v is not None:
                             self._last_good[i] = resp.value
-                            self._last_contact_ts = time.time()
+                            self._last_contact_ts = time.monotonic()
                             self._stale_delivered = False
                             self._timeout_log_state.reset()
                         elif 'reason' in resp.value.tags:
-                            self._last_contact_ts = time.time()
+                            self._last_contact_ts = time.monotonic()
                             self._stale_delivered = True
                 # ----- Error dispatch driven by self._error_policy -----
                 # See ``error_policy.py`` for the action vocabulary
@@ -543,8 +544,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         logger.debug(f'{self}: address ({str(r.address)}) subscription expired - renewing')
                         # A renewal is a healthy heartbeat: the server is up
                         # and would have reported errors — the shown value is
-                        # still truthful, so the tolerance clock restarts.
-                        self._last_contact_ts = time.time()
+                        # still truthful, so the T2 clock restarts.
+                        self._last_contact_ts = time.monotonic()
                         continue_while = True
                         break
                     if r.error is None:
@@ -616,16 +617,20 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     self._severity_state.clear()
                 if notify_then_continue:
                     # Fire callback with the error response, then keep
-                    # retrying in the next loop iteration.
+                    # retrying in the next loop iteration. Clear BEFORE the
+                    # backoff: waiters woken at set() keep their wake-up, but
+                    # an event left set through a long backoff would
+                    # re-deliver the same error in a tight loop.
                     self._event.set()
-                    if retry_delay > 0:
-                        await asyncio.sleep(retry_delay)
                     await asyncio.sleep(0)
                     self._event.clear()
-                    # Truth axis is orthogonal to NOTIFY: past the
-                    # tolerance the client is also owed a stale-None.
+                    # Truth axis is orthogonal to NOTIFY: past T2 the client
+                    # is also owed a stale-None (before the backoff, so it is
+                    # punctual).
                     if self._maybe_synthesize_stale(reason=last_error_code):
                         await self._pulse_event()
+                    if retry_delay > 0:
+                        await asyncio.sleep(retry_delay)
                     continue
                 if continue_while:
                     # While the transport axis silently retries, the truth
@@ -717,7 +722,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
         if not self._stale_opt_in or self._stale_delivered:
             return False
         now = time.time()
-        silence = now - self._last_contact_ts
+        silence = time.monotonic() - self._last_contact_ts
         for r in self._list_request:
             max_age = r.time_of_data_max_age or 2 * r.time_of_data_tolerance
             if silence <= max_age:

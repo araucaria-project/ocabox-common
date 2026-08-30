@@ -1,5 +1,6 @@
 import copy
 import logging
+import math
 import time
 from dataclasses import dataclass, fields, field
 from typing import ClassVar
@@ -95,6 +96,12 @@ class ValueRequest(ValueExchange):
     address: str or Address or dict
     time_of_data: float or None = None  # default - now
     time_of_data_tolerance: float or None = None  # default - get from config  :  moznaq zwrocic dane z zakresu (time_of_data - time_of_data_tolerance, now)
+    index: int = field(init=False, default=0)
+    request_timeout: float or None = None  # absolute request timeout
+    request_type: str = field(default='GET')
+    request_data: dict or None = None
+    user: BaseTreeUser = None
+    cycle_query: bool = False
     # T2 of the temporal model (T0=delay, T1=time_of_data_tolerance, T2=this):
     # data younger than T1 is preferred, (T1, T2] is still an acceptable answer
     # while a refresh is being fought for, older than T2 must not be presented —
@@ -102,13 +109,8 @@ class ValueRequest(ValueExchange):
     # cycle queries with a declared value_policy default it to 2*T1). A plain
     # dataclass field, NOT request_data: old servers drop it in from_dict, so
     # it can never leak to connectors (safe against the 2.3.12 bug class).
+    # Declared LAST so pre-1.3.0 positional constructor calls keep working.
     time_of_data_max_age: float or None = None
-    index: int = field(init=False, default=0)
-    request_timeout: float or None = None  # absolute request timeout
-    request_type: str = field(default='GET')
-    request_data: dict or None = None
-    user: BaseTreeUser = None
-    cycle_query: bool = False
 
     def __post_init__(self):
         # check timeout
@@ -135,6 +137,8 @@ class ValueRequest(ValueExchange):
         # check time_of_data_max_age (T2): when declared it must not undercut T1
         if self.time_of_data_max_age is not None:
             self.time_of_data_max_age = float(self.time_of_data_max_age)
+            if math.isnan(self.time_of_data_max_age):
+                raise ValueError('time_of_data_max_age must not be NaN')
             if self.time_of_data_max_age < self.time_of_data_tolerance:
                 logger.warning(f'time_of_data_max_age ({self.time_of_data_max_age}) < time_of_data_tolerance '
                                f'({self.time_of_data_tolerance}) for {self.address} — clamping to the tolerance')
@@ -158,6 +162,13 @@ class ValueRequest(ValueExchange):
             self.user = TreeUser(**self.user)
         else:
             raise ValueError
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        if d.get('time_of_data_max_age') is None:
+            # undeclared T2 stays wire-silent — bit-for-bit with pre-1.3.0
+            d.pop('time_of_data_max_age', None)
+        return d
 
     def copy(self):
         return copy.deepcopy(self)

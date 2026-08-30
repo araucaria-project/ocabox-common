@@ -134,6 +134,58 @@ class TestMaxAgeWire(unittest.IsolatedAsyncioTestCase):
                                time_of_data_max_age=0.5)
         self.assertEqual(clamped.time_of_data_max_age, 2.0)
 
+    async def test_undeclared_request_is_wire_silent(self):
+        """No policy → serialized dict is bit-for-bit pre-1.3.0: no T2 key."""
+        r = ValueRequest(address=Address('test.subject'), time_of_data_tolerance=1.0)
+        self.assertNotIn('time_of_data_max_age', r.to_dict())
+        declared = ValueRequest(address=Address('test.subject'), time_of_data_tolerance=1.0,
+                                time_of_data_max_age=5.0)
+        self.assertEqual(declared.to_dict()['time_of_data_max_age'], 5.0)
+
+    async def test_positional_constructor_compatibility(self):
+        """T2 is declared last: pre-1.3.0 positional calls keep their meaning."""
+        import time as _time
+        deadline = _time.time() + 30
+        r = ValueRequest('test.subject', _time.time(), 5.0, deadline)
+        self.assertEqual(r.request_timeout, deadline)
+        self.assertIsNone(r.time_of_data_max_age)
+
+    async def test_nan_max_age_rejected(self):
+        with self.assertRaises(ValueError):
+            ValueRequest(address=Address('test.subject'), time_of_data_tolerance=1.0,
+                         time_of_data_max_age=float('nan'))
+
+    async def test_with_overrides_none_clears_the_axis(self):
+        cleared = ErrorPolicy.DISPLAY.with_overrides(value_policy=None)
+        self.assertIsNone(cleared.value_policy)
+        # and not passing it keeps the preset's declaration
+        kept = ErrorPolicy.DISPLAY.with_overrides(
+            normal=SeverityRule(action=SeverityAction.RETRY, backoff=Backoff.immediate()))
+        self.assertIs(kept.value_policy, ValuePolicy.NONE)
+
+    async def test_notify_backoff_does_not_spam_callbacks(self):
+        """The event must not stay set through a NOTIFY backoff — one callback
+        per error batch, not a tight re-delivery loop."""
+        policy = ErrorPolicy.SERVICE.with_overrides(
+            normal=SeverityRule(action=SeverityAction.NOTIFY, backoff=Backoff.fixed(0.2)),
+            value_policy=ValuePolicy.NONE,
+        )
+        crs = ScriptedSolver([[make_error_response(code=2003)]])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=5.0)],
+                                   delay=0.01, error_policy=policy)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        await asyncio.sleep(0.5)  # ~2-3 error batches at 0.2s backoff
+        cq.stop()
+        await cq.stop_and_wait()
+        self.assertLessEqual(len(calls), 4, f'callback spam: {len(calls)} deliveries in 0.5s')
+        self.assertGreaterEqual(len(calls), 1)
+
     async def test_undeclared_policy_leaves_max_age_unset(self):
         crs = ScriptedSolver([[make_ok_response()]])
         cq = ConditionalCycleQuery(crs=crs, list_request=[make_request()],

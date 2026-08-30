@@ -39,6 +39,9 @@ from obcom.data_colection.response_error import ResponseError
 
 logger = logging.getLogger(__name__.rsplit('.', maxsplit=1)[-1])
 
+#: sentinel distinguishing "argument not given" from an explicit ``None``
+_UNSET = object()
+
 
 class SeverityAction(str, Enum):
     """How the cycle-query should react to an error of a given severity."""
@@ -282,8 +285,13 @@ class ErrorPolicy:
                        temporary: Optional[SeverityRule] = None,
                        normal: Optional[SeverityRule] = None,
                        critical: Optional[SeverityRule] = None,
-                       value_policy: Optional[ValuePolicy] = None) -> 'ErrorPolicy':
-        """Return a copy with selected rules/axes replaced."""
+                       value_policy=_UNSET) -> 'ErrorPolicy':
+        """Return a copy with selected rules/axes replaced.
+
+        ``value_policy`` accepts a :class:`ValuePolicy` (or its string value)
+        and also an explicit ``None`` to *clear* the axis (undeclared,
+        wire-silent) — e.g. ``DISPLAY.with_overrides(value_policy=None)``.
+        """
         kwargs = {}
         if temporary is not None:
             kwargs['temporary'] = temporary
@@ -291,8 +299,8 @@ class ErrorPolicy:
             kwargs['normal'] = normal
         if critical is not None:
             kwargs['critical'] = critical
-        if value_policy is not None:
-            kwargs['value_policy'] = ValuePolicy(value_policy)
+        if value_policy is not _UNSET:
+            kwargs['value_policy'] = None if value_policy is None else ValuePolicy(value_policy)
         return replace(self, **kwargs)
 
     def rule_for(self, severity: Optional[str]) -> SeverityRule:

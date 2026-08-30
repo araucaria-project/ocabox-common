@@ -207,7 +207,6 @@ class BaseClientAPI(ABC):
             parameters_dict = {}
         request = ValueRequest(address=address,
                                time_of_data_tolerance=time_of_data_tolerance,
-                               time_of_data_max_age=max_data_age,
                                request_data=parameters_dict,
                                user=self.user)
         CQ_API = PeriodicCycleQuery(crs=self._CRS, list_request=[request], delay=delay,
