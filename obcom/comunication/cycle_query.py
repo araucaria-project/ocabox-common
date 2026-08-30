@@ -572,6 +572,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 retry_delay = 0.0                # backoff sleep before next attempt (RETRY/NOTIFY)
                 successful_response = True       # reset per-severity state if no error
                 last_error_code = None           # reason tag for a synthesized stale-None
+                advanced_severities = set()      # charge each severity once per batch
                 for r in self._last_response:
                     if r.status:
                         continue
@@ -606,7 +607,12 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     if state is None:
                         state = _SeverityRetryState(rule)
                         self._severity_state[severity] = state
-                    state.attempts += 1
+                    if severity not in advanced_severities:
+                        # attempts means "consecutive failing polls", so a
+                        # batch with several same-severity members advances
+                        # the counter (and its budget/backoff stage) once
+                        advanced_severities.add(severity)
+                        state.attempts += 1
                     action = rule.action
                     # Convert RETRY/NOTIFY → STOP if the budget is spent.
                     if (action != SeverityAction.STOP and rule.budget is not None

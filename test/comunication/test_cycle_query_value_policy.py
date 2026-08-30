@@ -18,6 +18,7 @@ from obcom.comunication.comunication_error import CommunicationTimeoutError
 from obcom.comunication.cycle_query import ConditionalCycleQuery
 from obcom.comunication.error_policy import (
     Backoff,
+    Budget,
     ErrorPolicy,
     SeverityAction,
     SeverityRule,
@@ -487,11 +488,41 @@ class TestRound5Regressions(unittest.IsolatedAsyncioTestCase):
             calls.append(list(resp))
 
         cq.add_callback_async_method(on_msg)
-        await _drive(cq, calls, target=1, timeout=1.0)
-        await asyncio.sleep(0.05)
-        stopped = cq.is_stopped() or (cq._task is not None and cq._task.done())
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 1.0
+        while not (cq._task is not None and cq._task.done()) \
+                and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        stopped = cq._task is not None and cq._task.done()  # observed BEFORE any cleanup stop
         await cq.stop_and_wait()
         self.assertTrue(stopped, 'CRITICAL must stop the subscription even behind a NORMAL error')
+
+    async def test_same_severity_members_charge_the_budget_once_per_batch(self):
+        """Retry state is keyed by severity: a two-address NORMAL batch must
+        advance attempts once per poll, not once per member."""
+        policy = ErrorPolicy.INTERACTIVE.with_overrides(
+            normal=SeverityRule(action=SeverityAction.RETRY, backoff=Backoff.immediate(),
+                                budget=Budget(max_attempts=4)))
+        script = [[make_error_response(addr='test.a'), make_error_response(addr='test.b')],
+                  [make_error_response(addr='test.a'), make_error_response(addr='test.b')],
+                  [make_ok_response(addr='test.a', v=1), make_ok_response(addr='test.b', v=2)]]
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs,
+                                   list_request=[make_request(addr='test.a'),
+                                                 make_request(addr='test.b')],
+                                   delay=0.01, error_policy=policy)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=1, timeout=1.5)
+        await cq.stop_and_wait()
+        # per-member counting would hit max_attempts=4 after 2 polls and STOP
+        # before the success; per-poll counting survives to deliver it
+        self.assertTrue(calls and calls[0][0].status,
+                        'budget exhausted early — attempts charged per member, not per poll')
 
     async def test_missed_limit_follows_transport_identity_not_value_policy(self):
         """FAIL_FAST + NONE: the caller's transport budget (max_missed_msg)
@@ -536,9 +567,12 @@ class TestRound5Regressions(unittest.IsolatedAsyncioTestCase):
             calls.append(list(resp))
 
         cq.add_callback_async_method(on_msg)
-        await _drive(cq, calls, target=1, timeout=1.0)
-        await asyncio.sleep(0.05)
-        stopped = cq.is_stopped() or (cq._task is not None and cq._task.done())
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 1.0
+        while not (cq._task is not None and cq._task.done()) \
+                and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        stopped = cq._task is not None and cq._task.done()  # observed BEFORE any cleanup stop
         await cq.stop_and_wait()
         self.assertTrue(stopped, 'CRITICAL must stop the subscription even behind a 4004')
 
