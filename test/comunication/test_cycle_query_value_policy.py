@@ -657,6 +657,43 @@ class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(values, [1, None, 2, None])
         self.assertEqual(calls[3][0].value.tags['last_good'], 2)
 
+    async def test_persistent_notify_error_stays_suppressed_after_stale_none(self):
+        """DISPLAY-style (NOTIFY + NONE): once the episode's stale-None is
+        delivered, later raw error batches must not replace it — errors stay
+        suppressed (callback and _last_response alike) until a real value
+        resets the episode."""
+        policy = ErrorPolicy.SERVICE.with_overrides(
+            normal=SeverityRule(action=SeverityAction.NOTIFY, backoff=Backoff.immediate()),
+            value_policy=ValuePolicy.NONE,
+        )
+        script = [[make_ok_response(v=5)], [make_error_response(code=2003)]]
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=policy)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 2.0
+        while (not calls or calls[-1][0].value is None or calls[-1][0].value.v is not None) \
+                and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.005)
+        # Errors keep arriving past T2 — prove they stay suppressed.
+        await asyncio.sleep(0.2)
+        held_view = list(cq._last_response)
+        cq.stop()
+        await cq.stop_and_wait()
+        nones = [c for c in calls if c[0].status and c[0].value is not None and c[0].value.v is None]
+        self.assertEqual(len(nones), 1, 'stale-None must be delivered exactly once per episode')
+        self.assertIs(calls[-1], nones[0],
+                      'no raw error batch may follow the episode stale-None')
+        self.assertEqual(nones[0][0].value.tags['last_good'], 5)
+        self.assertTrue(held_view and held_view[0].status and held_view[0].value.v is None,
+                        '_last_response must keep the stale view while errors persist')
+
     async def test_last_good_policy_does_not_synthesize(self):
         policy = ErrorPolicy.SERVICE.with_overrides(value_policy=ValuePolicy.LAST_GOOD)
         script = [[make_ok_response(v=9)], CommunicationTimeoutError(message='no router')]

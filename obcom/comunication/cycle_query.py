@@ -490,6 +490,11 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # True after a stale-None was delivered; reset by the next real
         # value so each staleness episode wakes the client exactly once.
         self._stale_delivered: bool = False
+        # The batch that opened the active staleness episode (synthesized
+        # here or pushed by a >=2.6 server). While the episode lasts it IS
+        # the delivered truth: raw error batches and empty timeout results
+        # must not replace it in ``_last_response``.
+        self._stale_view: Optional[list] = None
         # The T2 clock runs from the last *healthy contact* — a batch of
         # real values or a 4004 long-poll renewal (server alive, value
         # unchanged-and-fresh). It deliberately does NOT run from the last
@@ -558,9 +563,11 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     self._last_contact_ts = time.monotonic()
                     if saw_value:
                         self._stale_delivered = False
+                        self._stale_view = None
                         self._timeout_log_state.reset()
                     elif saw_server_none:
                         self._stale_delivered = True
+                        self._stale_view = list(result)
                 # ----- Error dispatch driven by self._error_policy -----
                 # See ``error_policy.py`` for the action vocabulary
                 # (RETRY / NOTIFY / STOP) and the per-severity rules. The
@@ -670,6 +677,13 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     # _last_response within the same loop turn.
                     if self._maybe_synthesize_stale(reason=last_error_code):
                         await self._pulse_event()
+                    elif self._hold_stale_view():
+                        # Episode active: the stale-None already superseded
+                        # this error, so raw notifies stay suppressed until a
+                        # real value resets the episode — otherwise the
+                        # promised Value(None) would be replaced by the raw
+                        # error batch on the very next retry.
+                        pass
                     else:
                         # Fire callback with the error response, then keep
                         # retrying. Clear BEFORE the backoff: waiters woken at
@@ -689,6 +703,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     # at the T2 deadline so the None stays punctual.
                     if self._maybe_synthesize_stale(reason=last_error_code):
                         await self._pulse_event()
+                    else:
+                        self._hold_stale_view()
                     await self._backoff_sleep(retry_delay, last_error_code)
                     await asyncio.sleep(0)
                     continue
@@ -715,10 +731,13 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 # "Application do not answer").
                 if self._maybe_synthesize_stale(reason=4002):
                     await self._pulse_event()
+                else:
+                    self._hold_stale_view()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self._last_response = []
+                self._hold_stale_view()
                 # Under a SERVICE-style policy (NORMAL action = RETRY), an
                 # unexpected exception must not permanently kill the
                 # subscription — a daemon is explicitly configured to
@@ -797,6 +816,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
                                        status=True, error=None))
         self._last_response = batch
         self._stale_delivered = True
+        self._stale_view = batch
         # Drop the change bookkeeping: the server never witnessed this None,
         # so on the next successful contact it must redeliver the current
         # value unconditionally (it may be fresh even though we lost touch).
@@ -811,6 +831,21 @@ class ConditionalCycleQuery(BaseCycleQuery):
         self._event.set()
         await asyncio.sleep(0)
         self._event.clear()
+
+    def _hold_stale_view(self) -> bool:
+        """Keep the active episode's None batch as the delivered truth.
+
+        Returns True while a staleness episode is active (its rich None was
+        already delivered); restores that batch into ``_last_response`` so
+        neither a raw error batch nor an empty timeout result replaces the
+        contract-compliant view. Errors stay suppressed until a real value
+        resets the episode.
+        """
+        if not self._stale_delivered:
+            return False
+        if self._stale_view is not None:
+            self._last_response = self._stale_view
+        return True
 
     def _stale_deadline_remaining(self):
         """Seconds until the whole batch breaks T2, or None when synthesis
