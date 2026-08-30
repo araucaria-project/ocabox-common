@@ -633,12 +633,10 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         notify_then_continue = True
                     else:
                         continue_while = True
-                    break
-                else:
-                    # for-else: no break taken, all responses were either
-                    # status=True or non-error continuation cases. Fall
-                    # through to the value/None checks below.
-                    pass
+                    # NO break: keep scanning — a later member may carry a
+                    # more severe error (STOP raises above the moment it is
+                    # seen; NOTIFY outranks RETRY at delivery time), and every
+                    # erroring member is real evidence for its severity state.
                 # Apply per-response value/protocol checks for the
                 # status=True path (these mirror the historical code).
                 if not continue_while and not notify_then_continue:
@@ -737,11 +735,14 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 self._errors = CommunicationRuntimeError(message='Unrecognized error')
                 self._event.set()
                 break
-            if missed >= self._max_missed_msg >= 0 and not self._stale_opt_in:
-                # Historical counter path. Opted-in subscriptions are
-                # governed by the tolerance clock instead: silence beyond
-                # the tolerance already delivered a stale-None, and the
-                # loop keeps trying to reconnect indefinitely.
+            if (missed >= self._max_missed_msg >= 0
+                    and self._error_policy.normal.action == SeverityAction.STOP):
+                # The missed-message limit is a TRANSPORT-axis stop, so it
+                # follows the transport identity (NORMAL action), not the
+                # truth axis: FAIL_FAST/INTERACTIVE stop after the budget even
+                # when value_policy delivered a None; retry-forever identities
+                # (SERVICE/DISPLAY) nurse the connection indefinitely — the
+                # truth axis meanwhile keeps the consumer honest via T2.
                 logger.error(f"{self}: Too many missed messages at same time")
                 self._errors = CommunicationRuntimeError(message='Too many missed messages at same time')
                 self._event.set()

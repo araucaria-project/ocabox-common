@@ -470,6 +470,55 @@ class TestRound5Regressions(unittest.IsolatedAsyncioTestCase):
         self.assertLess(stamps[1], 1.0,
                         f'None at +{stamps[1]:.2f}s — renewal-first ordering postponed synthesis')
 
+    async def test_critical_behind_a_normal_error_stops_the_subscription(self):
+        """[NORMAL, CRITICAL] batches: the CRITICAL member must be dispatched
+        (STOP), not shadowed by the earlier NORMAL member's RETRY."""
+        r1 = make_request(addr='test.a')
+        r2 = make_request(addr='test.b')
+        script = [[make_error_response(addr='test.a', code=2003,
+                                       severity=ResponseError.SEVERITY_NORMAL),
+                   make_error_response(addr='test.b', code=3002,
+                                       severity=ResponseError.SEVERITY_CRITICAL)]]
+        cq = ConditionalCycleQuery(crs=ScriptedSolver(script), list_request=[r1, r2],
+                                   delay=0.01, error_policy=ErrorPolicy.SERVICE)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=1, timeout=1.0)
+        await asyncio.sleep(0.05)
+        stopped = cq.is_stopped() or (cq._task is not None and cq._task.done())
+        await cq.stop_and_wait()
+        self.assertTrue(stopped, 'CRITICAL must stop the subscription even behind a NORMAL error')
+
+    async def test_missed_limit_follows_transport_identity_not_value_policy(self):
+        """FAIL_FAST + NONE: the caller's transport budget (max_missed_msg)
+        still stops the subscription — the truth axis only shapes what is
+        delivered, never whether the transport gives up."""
+        policy = ErrorPolicy.FAIL_FAST.with_overrides(value_policy=ValuePolicy.NONE)
+        request = make_request(tolerance=0.05)
+        request.time_of_data_max_age = 0.1
+        crs = ScriptedSolver([CommunicationTimeoutError(message='router gone')])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[request],
+                                   delay=0.01, error_policy=policy, max_missed_msg=2)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 2.0
+        while not cq.is_stopped() and asyncio.get_event_loop().time() < deadline:
+            if cq._task is not None and cq._task.done():
+                break
+            await asyncio.sleep(0.02)
+        stopped = cq.is_stopped() or (cq._task is not None and cq._task.done())
+        await cq.stop_and_wait()
+        self.assertTrue(stopped, 'FAIL_FAST identity must honor max_missed_msg despite value_policy=NONE')
+
     async def test_critical_after_renewal_stops_the_subscription(self):
         """A CRITICAL member after a 4004 must be dispatched (STOP), not be
         swallowed by the renewal branch's early exit."""
