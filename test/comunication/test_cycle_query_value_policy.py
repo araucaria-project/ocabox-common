@@ -4,7 +4,8 @@ Phase 1 (ocabox-common#9 of epic ocabox-common#8): a declared
 ``ValuePolicy`` is serialized into cyclic-query ``request_data`` and, for
 ``NONE``, the client library synthesizes a rich ``Value(None)`` once
 silence (router timeouts, retried server errors) outlives the
-subscription's ``time_of_data_tolerance``. Undeclared policies must be
+subscription's T2 (``time_of_data_max_age``, default ``2 * T1``).
+Undeclared policies must be
 bit-for-bit inert — that is the deployment-safety property that lets
 1.3.0 ship before ocabox-server 2.5.2 reaches production.
 """
@@ -185,6 +186,65 @@ class TestMaxAgeWire(unittest.IsolatedAsyncioTestCase):
         await cq.stop_and_wait()
         self.assertLessEqual(len(calls), 4, f'callback spam: {len(calls)} deliveries in 0.5s')
         self.assertGreaterEqual(len(calls), 1)
+
+    async def test_synthesis_wakes_mid_backoff(self):
+        """T2 expiring inside a long retry backoff must not delay the None
+        until the next attempt — the sleep wakes at the deadline."""
+        policy = ErrorPolicy.SERVICE.with_overrides(
+            normal=SeverityRule(action=SeverityAction.RETRY, backoff=Backoff.fixed(1.5)),
+            value_policy=ValuePolicy.NONE,
+        )
+        request = make_request(tolerance=0.05)
+        request.time_of_data_max_age = 0.15
+        crs = ScriptedSolver([[make_ok_response(v=1)], [make_error_response(code=2003)]])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[request],
+                                   delay=0.01, error_policy=policy)
+        calls, t0 = [], asyncio.get_event_loop().time()
+        stamps = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+            stamps.append(asyncio.get_event_loop().time() - t0)
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=2, timeout=1.0)
+        await cq.stop_and_wait()
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertIsNone(calls[1][0].value.v)
+        self.assertLess(stamps[1], 0.6,
+                        f'stale-None at +{stamps[1]:.2f}s — waited out the 1.5s backoff instead of waking at T2')
+
+    async def test_stale_none_supersedes_notify_error_past_t2(self):
+        """When a NOTIFY error arrives past T2, the consumer gets ONE coherent
+        delivery — the rich None (error code in tags) — not an error batch
+        racing the synthesis for _last_response."""
+        policy = ErrorPolicy.SERVICE.with_overrides(
+            normal=SeverityRule(action=SeverityAction.NOTIFY, backoff=Backoff.immediate()),
+            value_policy=ValuePolicy.NONE,
+        )
+        request = make_request(tolerance=0.05)
+        request.time_of_data_max_age = 0.1
+        crs = ScriptedSolver([[make_ok_response(v=1)], [make_error_response(code=2003)]])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[request],
+                                   delay=0.01, error_policy=policy)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 1.5
+        while asyncio.get_event_loop().time() < deadline:
+            if any(c[0].status and c[0].value and c[0].value.v is None for c in calls):
+                break
+            await asyncio.sleep(0.01)
+        cq.stop()
+        await cq.stop_and_wait()
+        nones = [c for c in calls if c[0].status and c[0].value and c[0].value.v is None]
+        self.assertEqual(len(nones), 1, 'exactly one stale-None per episode')
+        self.assertEqual(nones[0][0].value.tags['reason'], 2003,
+                         'the superseding None must carry the error code as reason')
 
     async def test_undeclared_policy_leaves_max_age_unset(self):
         crs = ScriptedSolver([[make_ok_response()]])

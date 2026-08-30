@@ -149,6 +149,10 @@ class BaseClientAPI(ABC):
         :param async_callback_method: async method with one will be run after CycleQuery retrieve message from server
         :param error_policy: per-severity error-handling policy. See
             :class:`obcom.comunication.error_policy.ErrorPolicy`.
+        :param max_data_age: T2 of the temporal model — data older than this is
+            no longer an acceptable answer (Staleness Contract bound). Only
+            meaningful with a declared ``error_policy.value_policy``; defaults
+            to ``2 * time_of_data_tolerance``.
         :return:
         """
         cq = await self.subscribe(address=address, time_of_data_tolerance=time_of_data_tolerance, delay=delay,

@@ -616,31 +616,32 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 if successful_response and self._severity_state:
                     self._severity_state.clear()
                 if notify_then_continue:
-                    # Fire callback with the error response, then keep
-                    # retrying in the next loop iteration. Clear BEFORE the
-                    # backoff: waiters woken at set() keep their wake-up, but
-                    # an event left set through a long backoff would
-                    # re-deliver the same error in a tight loop.
-                    self._event.set()
-                    await asyncio.sleep(0)
-                    self._event.clear()
-                    # Truth axis is orthogonal to NOTIFY: past T2 the client
-                    # is also owed a stale-None (before the backoff, so it is
-                    # punctual).
+                    # Past T2 the rich stale-None (which carries this error's
+                    # code as `reason`) SUPERSEDES the raw error notify: one
+                    # coherent delivery instead of two racing writes to
+                    # _last_response within the same loop turn.
                     if self._maybe_synthesize_stale(reason=last_error_code):
                         await self._pulse_event()
-                    if retry_delay > 0:
-                        await asyncio.sleep(retry_delay)
+                    else:
+                        # Fire callback with the error response, then keep
+                        # retrying. Clear BEFORE the backoff: waiters woken at
+                        # set() keep their wake-up, but an event left set
+                        # through a long backoff would re-deliver the same
+                        # error in a tight loop.
+                        self._event.set()
+                        await asyncio.sleep(0)
+                        self._event.clear()
+                    await self._backoff_sleep(retry_delay, last_error_code)
                     continue
                 if continue_while:
                     # While the transport axis silently retries, the truth
-                    # axis watches the tolerance clock: masking an error is
-                    # allowed only as long as the last value is still fresh
-                    # enough for this client (Staleness Contract).
+                    # axis watches the T2 clock: masking an error is allowed
+                    # only as long as the last value is still fresh enough
+                    # for this client (Staleness Contract). The backoff wakes
+                    # at the T2 deadline so the None stays punctual.
                     if self._maybe_synthesize_stale(reason=last_error_code):
                         await self._pulse_event()
-                    if retry_delay > 0:
-                        await asyncio.sleep(retry_delay)
+                    await self._backoff_sleep(retry_delay, last_error_code)
                     await asyncio.sleep(0)
                     continue
                 self._event.set()
@@ -752,6 +753,34 @@ class ConditionalCycleQuery(BaseCycleQuery):
         self._event.set()
         await asyncio.sleep(0)
         self._event.clear()
+
+    def _stale_deadline_remaining(self):
+        """Seconds until the whole batch breaks T2, or None when synthesis
+        is not applicable (undeclared/LAST_GOOD/already delivered)."""
+        if not self._stale_opt_in or self._stale_delivered:
+            return None
+        silence = time.monotonic() - self._last_contact_ts
+        worst = max((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
+                    for r in self._list_request)
+        return worst - silence
+
+    async def _backoff_sleep(self, retry_delay: float, reason) -> None:
+        """Sleep the retry backoff, waking at the T2 deadline if it falls
+        inside — the stale-None must be punctual even under a 10-60s staged
+        backoff, not delayed until the next attempt."""
+        if retry_delay <= 0:
+            return
+        remaining = self._stale_deadline_remaining()
+        if remaining is not None and remaining < retry_delay:
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            if self._maybe_synthesize_stale(reason=reason):
+                await self._pulse_event()
+            rest = retry_delay - max(remaining, 0)
+            if rest > 0:
+                await asyncio.sleep(rest)
+        else:
+            await asyncio.sleep(retry_delay)
 
     def _update_request_data(self):
         """
