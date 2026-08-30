@@ -694,6 +694,29 @@ class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(held_view and held_view[0].status and held_view[0].value.v is None,
                         '_last_response must keep the stale view while errors persist')
 
+    async def test_startup_outage_none_carries_reason_alone(self):
+        """No value was ever seen: the synthesized None carries `reason` only —
+        the last_good tags are documented-optional and must not appear as
+        explicit Nones masquerading as a known last-good value."""
+        crs = ScriptedSolver([CommunicationTimeoutError(message='no router')])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=NONE_POLICY, max_missed_msg=-1)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=1, timeout=2.0)
+        await cq.stop_and_wait()
+        self.assertGreaterEqual(len(calls), 1)
+        stale = calls[0][0]
+        self.assertTrue(stale.status)
+        self.assertIsNone(stale.value.v)
+        self.assertEqual(stale.value.tags['reason'], 4002)
+        self.assertNotIn('last_good', stale.value.tags)
+        self.assertNotIn('last_good_ts', stale.value.tags)
+
     async def test_last_good_policy_does_not_synthesize(self):
         policy = ErrorPolicy.SERVICE.with_overrides(value_policy=ValuePolicy.LAST_GOOD)
         script = [[make_ok_response(v=9)], CommunicationTimeoutError(message='no router')]

@@ -809,6 +809,9 @@ class ConditionalCycleQuery(BaseCycleQuery):
         for i, r in enumerate(self._list_request):
             tags = {'reason': reason}
             last_good = self._last_good[i]
+            # last_good tags only when a good value was ever seen: a startup
+            # outage carries `reason` alone (the tags are documented-optional;
+            # an explicit None would masquerade as a known last-good value).
             if last_good is not None:
                 tags['last_good'] = last_good.v
                 tags['last_good_ts'] = last_good.ts
