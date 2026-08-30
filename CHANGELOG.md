@@ -3,6 +3,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.0]
+### Added
+- **Staleness Contract, phase 1**: `value_policy` axis (`RAISE`/`NONE`/`LAST_GOOD`)
+  in `ErrorPolicy`, `DISPLAY` preset, cyclic-query `request_data` fragment,
+  `ValueRequest.time_of_data_max_age` (T2 bound, default `2*tolerance`),
+  client-side rich `Value(None)` synthesis when silence exceeds T2;
+  `max_missed_msg` now follows the transport identity (stops only for
+  NORMAL=STOP presets). Inert unless a client opts in. (ocabox-common#8, #9)
+
 ## [1.2.2]
 ### Fixed
 - `TreeStructureError.__init__` accepted `severity` but never forwarded it to

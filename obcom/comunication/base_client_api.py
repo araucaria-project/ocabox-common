@@ -89,7 +89,8 @@ class BaseClientAPI(ABC):
                         delay: float or None = None, parameters_dict: dict = None,
                         name: str = 'Default_subscription', max_missed_msg: int = None,
                         ignore_errors: bool = False,
-                        error_policy: 'ErrorPolicy' = None) -> BaseCycleQuery:
+                        error_policy: 'ErrorPolicy' = None,
+                        max_data_age: float or None = None) -> BaseCycleQuery:
         """
         This method creates a cycle query that only returns new values. The `ConditionalCycleQuery` object is
         created and returned.
@@ -105,6 +106,10 @@ class BaseClientAPI(ABC):
         :param error_policy: per-severity error-handling policy. See
             :class:`obcom.comunication.error_policy.ErrorPolicy`. Default
             is ``ErrorPolicy.INTERACTIVE`` (GUI-friendly).
+        :param max_data_age: T2 of the temporal model — data older than this is
+            no longer an acceptable answer (Staleness Contract bound). Only
+            meaningful with a declared ``error_policy.value_policy``; defaults
+            to ``2 * time_of_data_tolerance``.
         :return: object `ConditionalCycleQuery`
         """
         if time_of_data_tolerance is None and delay:
@@ -113,6 +118,7 @@ class BaseClientAPI(ABC):
             parameters_dict = {}
         request = ValueRequest(address=address,
                                time_of_data_tolerance=time_of_data_tolerance,
+                               time_of_data_max_age=max_data_age,
                                request_data=parameters_dict,
                                user=self.user)
         CQ_API = ConditionalCycleQuery(crs=self._CRS, list_request=[request], delay=delay,
@@ -125,7 +131,8 @@ class BaseClientAPI(ABC):
                                       name: str = 'Default_subscription', max_missed_msg: int = None,
                                       ignore_errors: bool = False, callback_method=None,
                                       async_callback_method=None,
-                                      error_policy: 'ErrorPolicy' = None) -> BaseCycleQuery:
+                                      error_policy: 'ErrorPolicy' = None,
+                                      max_data_age: float or None = None) -> BaseCycleQuery:
         """
         This method creates a cycle query that only returns new values. The `ConditionalCycleQuery` object is
         created, started and returned.
@@ -142,11 +149,16 @@ class BaseClientAPI(ABC):
         :param async_callback_method: async method with one will be run after CycleQuery retrieve message from server
         :param error_policy: per-severity error-handling policy. See
             :class:`obcom.comunication.error_policy.ErrorPolicy`.
+        :param max_data_age: T2 of the temporal model — data older than this is
+            no longer an acceptable answer (Staleness Contract bound). Only
+            meaningful with a declared ``error_policy.value_policy``; defaults
+            to ``2 * time_of_data_tolerance``.
         :return:
         """
         cq = await self.subscribe(address=address, time_of_data_tolerance=time_of_data_tolerance, delay=delay,
                                   parameters_dict=parameters_dict, name=name, max_missed_msg=max_missed_msg,
-                                  ignore_errors=ignore_errors, error_policy=error_policy)
+                                  ignore_errors=ignore_errors, error_policy=error_policy,
+                                  max_data_age=max_data_age)
         if callback_method is not None:
             cq.add_callback_method(callback_method)
         if async_callback_method is not None:

@@ -11,9 +11,11 @@ from obcom.comunication.error_policy import (
     ErrorPolicy,
     SeverityAction,
     SeverityRule,
+    ValuePolicy,
     _LogPolicyState,
 )
 from obcom.data_colection.response_error import ResponseError
+from obcom.data_colection.value import Value
 from obcom.data_colection.value_call import ValueRequest, ValueResponse
 from abc import ABC, abstractmethod
 
@@ -450,6 +452,60 @@ class ConditionalCycleQuery(BaseCycleQuery):
         for r in self._list_request:
             r.request_timeout = self._timeout
             r.cycle_query = True
+        # ----- Staleness Contract (truth axis) -----
+        # A declared value_policy is serialized into request_data so the
+        # server (>= 2.5.2, which strips/consumes it) can mask errors on
+        # the tolerance clock. Undeclared policy → nothing serialized,
+        # nothing synthesized: pre-1.3.0 behaviour, safe with any server.
+        if self._error_policy.value_policy is not None:
+            for r in self._list_request:
+                r.request_data['value_policy'] = self._error_policy.value_policy.value
+                # T2 default: one full missed refresh cycle beyond the declared
+                # freshness (T1) — "fajne defaulty": nobody has to think about
+                # it and a healthy system's cadence stays governed by T1.
+                if r.time_of_data_max_age is None:
+                    r.time_of_data_max_age = 2 * r.time_of_data_tolerance
+        if self._stale_opt_in:
+            # The long-poll window must not exceed the truth bound: while a
+            # request is in flight the client is blind, so a dead router would
+            # only be noticed at the request timeout. Capping the window at T2
+            # bounds that detection latency; on a healthy connection the 4004
+            # renewals then arrive within T2 and keep the contact clock alive
+            # (no false staleness, old or new server). Floor of 1s so a very
+            # tight T2 does not turn into a renewal storm.
+            tightest_t2 = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
+                              for r in self._list_request)
+            if tightest_t2 < 1.0:
+                logger.warning(f"{self}: time_of_data_max_age {tightest_t2}s is below the long-poll "
+                               f"transport resolution — transport-death detection is floored at ~1s "
+                               f"(a healthy server still enforces the exact bound server-side)")
+            window = max(1.0, tightest_t2)
+            if window < self._timeout:
+                self._timeout = window
+                for r in self._list_request:
+                    r.request_timeout = self._timeout
+        # Last truthful value per request — feeds last_good/last_good_ts
+        # tags of a synthesized stale-None.
+        self._last_good: List[Optional[Value]] = [None] * len(self._list_request)
+        # True after a stale-None was delivered; reset by the next real
+        # value so each staleness episode wakes the client exactly once.
+        self._stale_delivered: bool = False
+        # The batch that opened the active staleness episode (synthesized
+        # here or pushed by a >=2.6 server). While the episode lasts it IS
+        # the delivered truth: raw error batches and empty timeout results
+        # must not replace it in ``_last_response``.
+        self._stale_view: Optional[list] = None
+        # The T2 clock runs from the last *healthy contact* — a batch of
+        # real values or a 4004 long-poll renewal (server alive, value
+        # unchanged-and-fresh). It deliberately does NOT run from the last
+        # value *change*: a value stable for days, confirmed by renewals,
+        # is perfectly truthful. Error batches and router silence do not
+        # touch this clock. Monotonic: immune to NTP/manual clock jumps
+        # (wall clock is used only for the emitted Value.ts).
+        self._last_contact_ts: float = time.monotonic()
+        # Router-silence warnings are throttled for opted-in subscriptions
+        # (the tolerance clock, not the operator, owns the outage there).
+        self._timeout_log_state: _LogPolicyState = self._error_policy.normal.log.make_state()
 
     async def _send_message(self):
         missed = 0
@@ -475,6 +531,43 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 self._last_response = result
                 missed = 0
                 not_clear_result = True  # if it gets some result return it for callback
+                # Record truthful values; a fully-healthy batch ends the
+                # current staleness episode (a later one may synthesize
+                # again). A rich stale-None delivered by a >=2.6 server
+                # (v=None + reason tag) is also healthy contact — and it
+                # means the consumer is already informed, so client-side
+                # synthesis must not duplicate it. Classification is
+                # order-independent, and the batch-wide clock/flags move only
+                # when the WHOLE batch is healthy (values, server-Nones, 4004
+                # renewals): a mixed [healthy, error] stream must not mask
+                # the erroring member forever — whole-batch semantics cut
+                # both ways.
+                saw_value = saw_server_none = False
+                batch_healthy = all(
+                    resp.status or (resp.error is not None and resp.error.code == 4004)
+                    for resp in result)
+                for i, resp in enumerate(result[:len(self._last_good)]):
+                    if resp.status and resp.value is not None:
+                        if resp.value.v is not None:
+                            self._last_good[i] = resp.value
+                            saw_value = True
+                        elif 'reason' in resp.value.tags:
+                            saw_server_none = True
+                        else:
+                            # a genuine server-witnessed None value (no reason
+                            # tag): unusual but legal — healthy contact ending
+                            # any staleness episode; nothing to keep as
+                            # last-good
+                            saw_value = True
+                if batch_healthy and (saw_value or saw_server_none):
+                    self._last_contact_ts = time.monotonic()
+                    if saw_value:
+                        self._stale_delivered = False
+                        self._stale_view = None
+                        self._timeout_log_state.reset()
+                    elif saw_server_none:
+                        self._stale_delivered = True
+                        self._stale_view = list(result)
                 # ----- Error dispatch driven by self._error_policy -----
                 # See ``error_policy.py`` for the action vocabulary
                 # (RETRY / NOTIFY / STOP) and the per-severity rules. The
@@ -485,6 +578,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 notify_then_continue = False     # outer-loop "fire callback first, then go again"
                 retry_delay = 0.0                # backoff sleep before next attempt (RETRY/NOTIFY)
                 successful_response = True       # reset per-severity state if no error
+                last_error_code = None           # reason tag for a synthesized stale-None
+                advanced_severities = set()      # charge each severity once per batch
                 for r in self._last_response:
                     if r.status:
                         continue
@@ -493,8 +588,18 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     # not really an error — keep its dedicated silent retry.
                     if r.error and r.error.code == 4004:
                         logger.debug(f'{self}: address ({str(r.address)}) subscription expired - renewing')
+                        # A renewal is a healthy heartbeat: the server is up
+                        # and would have reported errors — the shown value is
+                        # still truthful, so the T2 clock restarts. Gated on
+                        # whole-batch health: a mixed [4004, error] batch must
+                        # not postpone the erroring member's stale-None.
+                        if batch_healthy:
+                            self._last_contact_ts = time.monotonic()
+                        # keep scanning: a later member may carry a real error
+                        # that must set the action/reason (a CRITICAL after a
+                        # 4004 must STOP, not be mistaken for a renewal)
                         continue_while = True
-                        break
+                        continue
                     if r.error is None:
                         # Response carried ``status=False`` without an
                         # error object — preserve the historical "stop"
@@ -503,12 +608,18 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         raise CommunicationRuntimeError(
                             message=f"Client retrieve response without error object: {str(r)}")
                     severity = r.error.severity or ResponseError.SEVERITY_NORMAL
+                    last_error_code = r.error.code
                     rule = self._error_policy.rule_for(severity)
                     state = self._severity_state.get(severity)
                     if state is None:
                         state = _SeverityRetryState(rule)
                         self._severity_state[severity] = state
-                    state.attempts += 1
+                    if severity not in advanced_severities:
+                        # attempts means "consecutive failing polls", so a
+                        # batch with several same-severity members advances
+                        # the counter (and its budget/backoff stage) once
+                        advanced_severities.add(severity)
+                        state.attempts += 1
                     action = rule.action
                     # Convert RETRY/NOTIFY → STOP if the budget is spent.
                     if (action != SeverityAction.STOP and rule.budget is not None
@@ -535,12 +646,10 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         notify_then_continue = True
                     else:
                         continue_while = True
-                    break
-                else:
-                    # for-else: no break taken, all responses were either
-                    # status=True or non-error continuation cases. Fall
-                    # through to the value/None checks below.
-                    pass
+                    # NO break: keep scanning — a later member may carry a
+                    # more severe error (STOP raises above the moment it is
+                    # seen; NOTIFY outranks RETRY at delivery time), and every
+                    # erroring member is real evidence for its severity state.
                 # Apply per-response value/protocol checks for the
                 # status=True path (these mirror the historical code).
                 if not continue_while and not notify_then_continue:
@@ -562,17 +671,41 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 if successful_response and self._severity_state:
                     self._severity_state.clear()
                 if notify_then_continue:
-                    # Fire callback with the error response, then keep
-                    # retrying in the next loop iteration.
-                    self._event.set()
-                    if retry_delay > 0:
-                        await asyncio.sleep(retry_delay)
-                    await asyncio.sleep(0)
-                    self._event.clear()
+                    # Past T2 the rich stale-None (which carries this error's
+                    # code as `reason`) SUPERSEDES the raw error notify: one
+                    # coherent delivery instead of two racing writes to
+                    # _last_response within the same loop turn.
+                    if self._maybe_synthesize_stale(reason=last_error_code):
+                        await self._pulse_event()
+                    elif self._hold_stale_view():
+                        # Episode active: the stale-None already superseded
+                        # this error, so raw notifies stay suppressed until a
+                        # real value resets the episode — otherwise the
+                        # promised Value(None) would be replaced by the raw
+                        # error batch on the very next retry.
+                        pass
+                    else:
+                        # Fire callback with the error response, then keep
+                        # retrying. Clear BEFORE the backoff: waiters woken at
+                        # set() keep their wake-up, but an event left set
+                        # through a long backoff would re-deliver the same
+                        # error in a tight loop.
+                        self._event.set()
+                        await asyncio.sleep(0)
+                        self._event.clear()
+                    await self._backoff_sleep(retry_delay, last_error_code)
                     continue
                 if continue_while:
-                    if retry_delay > 0:
-                        await asyncio.sleep(retry_delay)
+                    # While the transport axis silently retries, the truth
+                    # axis watches the T2 clock: masking an error is allowed
+                    # only as long as the last value is still fresh enough
+                    # for this client (Staleness Contract). The backoff wakes
+                    # at the T2 deadline so the None stays punctual.
+                    if self._maybe_synthesize_stale(reason=last_error_code):
+                        await self._pulse_event()
+                    else:
+                        self._hold_stale_view()
+                    await self._backoff_sleep(retry_delay, last_error_code)
                     await asyncio.sleep(0)
                     continue
                 self._event.set()
@@ -585,12 +718,26 @@ class ConditionalCycleQuery(BaseCycleQuery):
             except CommunicationTimeoutError:
                 missed += 1
                 self._last_response = []
-                logger.warning(f'{self}: The waiting time for the message has expired. The router is not '
-                               f'responding. Number of missing answers: {missed}')
+                msg = (f'{self}: The waiting time for the message has expired. The router is not '
+                       f'responding. Number of missing answers: {missed}')
+                if not self._stale_opt_in:
+                    logger.warning(msg)
+                elif self._timeout_log_state.should_warn():
+                    logger.warning(msg)
+                else:
+                    logger.debug(msg)
+                # Router silence: the lowest layer that still has data is
+                # this one, so stale-synthesis happens here (4002 =
+                # "Application do not answer").
+                if self._maybe_synthesize_stale(reason=4002):
+                    await self._pulse_event()
+                else:
+                    self._hold_stale_view()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self._last_response = []
+                self._hold_stale_view()
                 # Under a SERVICE-style policy (NORMAL action = RETRY), an
                 # unexpected exception must not permanently kill the
                 # subscription — a daemon is explicitly configured to
@@ -604,18 +751,132 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 else:
                     logger.debug(msg, exc_info=True)
                 if self._error_policy.normal.action != SeverityAction.STOP:
-                    await asyncio.sleep(_CATCH_ALL_RETRY_DELAY)
+                    # The truth axis holds even for unrecognized failures: the
+                    # deadline-aware sleep synthesizes the stale-None when T2
+                    # expires mid-retry (a persistent internal error must not
+                    # leave a DISPLAY consumer showing its old value forever).
+                    await self._backoff_sleep(_CATCH_ALL_RETRY_DELAY, type(e).__name__)
                     continue
                 self._errors = CommunicationRuntimeError(message='Unrecognized error')
                 self._event.set()
                 break
-            if missed >= self._max_missed_msg >= 0:
+            if (missed >= self._max_missed_msg >= 0
+                    and self._error_policy.normal.action == SeverityAction.STOP):
+                # The missed-message limit is a TRANSPORT-axis stop, so it
+                # follows the transport identity (NORMAL action), not the
+                # truth axis: FAIL_FAST/INTERACTIVE stop after the budget even
+                # when value_policy delivered a None; retry-forever identities
+                # (SERVICE/DISPLAY) nurse the connection indefinitely — the
+                # truth axis meanwhile keeps the consumer honest via T2.
                 logger.error(f"{self}: Too many missed messages at same time")
                 self._errors = CommunicationRuntimeError(message='Too many missed messages at same time')
                 self._event.set()
                 break
             await asyncio.sleep(0)
             self._event.clear()
+
+    @property
+    def _stale_opt_in(self) -> bool:
+        """True when this subscription declared ``ValuePolicy.NONE``.
+
+        Only NONE turns on client-side stale synthesis: RAISE wants the
+        error itself (severity actions), LAST_GOOD wants the aging value
+        left in place — both are already what the historical loop does.
+        """
+        return self._error_policy.value_policy is ValuePolicy.NONE
+
+    def _maybe_synthesize_stale(self, reason=None) -> bool:
+        """Deliver a rich stale-None once the whole batch breaks tolerance.
+
+        Whole-batch on purpose: everything handled here (router silence,
+        server-side errors while retrying) affects the batch as one;
+        per-address masking is the server freezer's job (Staleness
+        Contract phase 2). Returns True when ``self._last_response`` now
+        holds the synthesized batch and the caller should wake waiters.
+        """
+        if not self._stale_opt_in or self._stale_delivered:
+            return False
+        now = time.time()
+        silence = time.monotonic() - self._last_contact_ts
+        # Whole-batch synthesis triggers at the TIGHTEST bound: a late None
+        # violates that member's truth bound, an early None for a looser
+        # member is merely conservative (masking is permitted, not mandated).
+        tightest_t2 = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
+                          for r in self._list_request)
+        if silence <= tightest_t2:
+            return False  # still truthful (within the tightest T2) — keep masking
+        batch = []
+        for i, r in enumerate(self._list_request):
+            tags = {'reason': reason}
+            last_good = self._last_good[i]
+            # last_good tags only when a good value was ever seen: a startup
+            # outage carries `reason` alone (the tags are documented-optional;
+            # an explicit None would masquerade as a known last-good value).
+            if last_good is not None:
+                tags['last_good'] = last_good.v
+                tags['last_good_ts'] = last_good.ts
+            batch.append(ValueResponse(address=r.address, value=Value(v=None, ts=now, tags=tags),
+                                       status=True, error=None))
+        self._last_response = batch
+        self._stale_delivered = True
+        self._stale_view = batch
+        # Drop the change bookkeeping: the server never witnessed this None,
+        # so on the next successful contact it must redeliver the current
+        # value unconditionally (it may be fresh even though we lost touch).
+        for r in self._list_request:
+            r.request_data.pop('time_of_known_change', None)
+            r.request_data.pop('no_send_before', None)
+        logger.info(f"{self}: tolerance exceeded — delivering stale-None (reason={reason})")
+        return True
+
+    async def _pulse_event(self):
+        """Wake ``get_response`` waiters exactly once with the current response."""
+        self._event.set()
+        await asyncio.sleep(0)
+        self._event.clear()
+
+    def _hold_stale_view(self) -> bool:
+        """Keep the active episode's None batch as the delivered truth.
+
+        Returns True while a staleness episode is active (its rich None was
+        already delivered); restores that batch into ``_last_response`` so
+        neither a raw error batch nor an empty timeout result replaces the
+        contract-compliant view. Errors stay suppressed until a real value
+        resets the episode.
+        """
+        if not self._stale_delivered:
+            return False
+        if self._stale_view is not None:
+            self._last_response = self._stale_view
+        return True
+
+    def _stale_deadline_remaining(self):
+        """Seconds until the whole batch breaks T2, or None when synthesis
+        is not applicable (undeclared/LAST_GOOD/already delivered)."""
+        if not self._stale_opt_in or self._stale_delivered:
+            return None
+        silence = time.monotonic() - self._last_contact_ts
+        tightest = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
+                       for r in self._list_request)
+        return tightest - silence
+
+    async def _backoff_sleep(self, retry_delay: float, reason) -> None:
+        """Sleep the retry backoff, waking at the T2 deadline if it falls
+        inside — the stale-None must be punctual even under a 10-60s staged
+        backoff, not delayed until the next attempt."""
+        if retry_delay <= 0:
+            return
+        remaining = self._stale_deadline_remaining()
+        if remaining is not None and remaining < retry_delay:
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            if self._maybe_synthesize_stale(reason=reason):
+                await self._pulse_event()
+            rest = retry_delay - max(remaining, 0)
+            if rest > 0:
+                await asyncio.sleep(rest)
+        else:
+            await asyncio.sleep(retry_delay)
 
     def _update_request_data(self):
         """
@@ -625,7 +886,15 @@ class ConditionalCycleQuery(BaseCycleQuery):
             last_msg_vr = self._last_response
             for i, lm in enumerate(last_msg_vr):
                 self._additional_request_data[i] = {}
-                if lm.value is not None:
+                # A client-synthesized stale-None (v=None + reason tag,
+                # no from_cf) is an answer, not an observed change — echoing
+                # its ts as time_of_known_change would tell the server we
+                # saw a change it never sent. A server-delivered stale-None
+                # (from_cf) IS witnessed: echoing its ts is what stops the
+                # server from re-delivering the same None every refresh.
+                if lm.value is not None and (lm.value.v is not None
+                                             or 'reason' not in lm.value.tags
+                                             or 'from_cf' in lm.value.tags):
                     time_of_known_change = lm.value.ts
                     self._list_request[i].request_data['time_of_known_change'] = time_of_known_change
                     no_send_before = lm.value.ts + self._delay
