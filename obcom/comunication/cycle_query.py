@@ -548,6 +548,12 @@ class ConditionalCycleQuery(BaseCycleQuery):
                             saw_value = True
                         elif 'reason' in resp.value.tags:
                             saw_server_none = True
+                        else:
+                            # a genuine server-witnessed None value (no reason
+                            # tag): unusual but legal — healthy contact ending
+                            # any staleness episode; nothing to keep as
+                            # last-good
+                            saw_value = True
                 if batch_healthy and (saw_value or saw_server_none):
                     self._last_contact_ts = time.monotonic()
                     if saw_value:
@@ -576,8 +582,11 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         logger.debug(f'{self}: address ({str(r.address)}) subscription expired - renewing')
                         # A renewal is a healthy heartbeat: the server is up
                         # and would have reported errors — the shown value is
-                        # still truthful, so the T2 clock restarts.
-                        self._last_contact_ts = time.monotonic()
+                        # still truthful, so the T2 clock restarts. Gated on
+                        # whole-batch health: a mixed [4004, error] batch must
+                        # not postpone the erroring member's stale-None.
+                        if batch_healthy:
+                            self._last_contact_ts = time.monotonic()
                         continue_while = True
                         break
                     if r.error is None:
@@ -716,7 +725,11 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 else:
                     logger.debug(msg, exc_info=True)
                 if self._error_policy.normal.action != SeverityAction.STOP:
-                    await asyncio.sleep(_CATCH_ALL_RETRY_DELAY)
+                    # The truth axis holds even for unrecognized failures: the
+                    # deadline-aware sleep synthesizes the stale-None when T2
+                    # expires mid-retry (a persistent internal error must not
+                    # leave a DISPLAY consumer showing its old value forever).
+                    await self._backoff_sleep(_CATCH_ALL_RETRY_DELAY, type(e).__name__)
                     continue
                 self._errors = CommunicationRuntimeError(message='Unrecognized error')
                 self._event.set()

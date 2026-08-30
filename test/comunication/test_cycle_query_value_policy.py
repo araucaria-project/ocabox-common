@@ -384,6 +384,91 @@ class TestBatchSemantics(unittest.IsolatedAsyncioTestCase):
                          'the erroring member must produce exactly one whole-batch stale-None')
 
 
+class TestRound5Regressions(unittest.IsolatedAsyncioTestCase):
+
+    async def test_catch_all_exception_path_synthesizes_at_t2(self):
+        """A persistent unrecognized exception (retry-forever policy) must not
+        leave the consumer showing its old value past T2 — the catch-all
+        retry sleep wakes at the deadline and synthesizes."""
+        class BrokenSolver:
+            async def send_request(self, requests, timeout=None, no_wait=False):
+                await asyncio.sleep(0)
+                raise RuntimeError('internal blow-up')
+
+        request = make_request(tolerance=0.05)
+        request.time_of_data_max_age = 0.15
+        cq = ConditionalCycleQuery(crs=BrokenSolver(), list_request=[request],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls, t0, stamps = [], asyncio.get_event_loop().time(), []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+            stamps.append(asyncio.get_event_loop().time() - t0)
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=1, timeout=2.0)
+        await cq.stop_and_wait()
+        self.assertGreaterEqual(len(calls), 1, 'no stale-None despite persistent internal failure')
+        self.assertIsNone(calls[0][0].value.v)
+        self.assertEqual(calls[0][0].value.tags['reason'], 'RuntimeError')
+        self.assertLess(stamps[0], 1.0, f'None at +{stamps[0]:.2f}s — waited out the 60s catch-all delay')
+
+    async def test_server_witnessed_none_value_counts_as_contact(self):
+        """A legal Value(v=None) WITHOUT a reason tag is a healthy answer —
+        it must feed the contact clock and never trigger a duplicate
+        client-synthesized None."""
+        bare_none = ValueResponse(address=Address('test.subject'),
+                                  value=Value(v=None, ts=100.0, tags={'from_cf': True}),
+                                  status=True, error=None)
+        request = make_request(tolerance=0.05)
+        request.time_of_data_max_age = 0.15
+        crs = ScriptedSolver([[make_ok_response(v=1)], [bare_none]])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[request],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        await asyncio.sleep(0.5)  # several T2 windows
+        cq.stop()
+        await cq.stop_and_wait()
+        synthesized = [c for c in calls
+                       if c[0].value is not None and c[0].value.v is None
+                       and 'reason' in c[0].value.tags]
+        self.assertEqual(synthesized, [], 'duplicate synthesized None on top of a server value-None')
+
+    async def test_renewal_first_mixed_batch_still_synthesizes(self):
+        """[4004, error] ordering must not refresh the contact clock — the
+        erroring member is owed its stale-None at T2."""
+        r1 = make_request(addr='test.a', tolerance=0.05)
+        r2 = make_request(addr='test.b', tolerance=0.05)
+        for r in (r1, r2):
+            r.time_of_data_max_age = 0.15
+        script = [[make_ok_response(addr='test.a', v=1), make_ok_response(addr='test.b', v=2)],
+                  [make_error_response(addr='test.a', code=4004,
+                                       severity=ResponseError.SEVERITY_TEMPORARY),
+                   make_error_response(addr='test.b')]]
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs, list_request=[r1, r2],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls, t0, stamps = [], asyncio.get_event_loop().time(), []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+            stamps.append(asyncio.get_event_loop().time() - t0)
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=2, timeout=2.0)
+        await cq.stop_and_wait()
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertTrue(all(r.value is not None and r.value.v is None for r in calls[1]))
+        self.assertLess(stamps[1], 1.0,
+                        f'None at +{stamps[1]:.2f}s — renewal-first ordering postponed synthesis')
+
+
 class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
 
     async def test_router_silence_beyond_tolerance_delivers_stale_none_once(self):
