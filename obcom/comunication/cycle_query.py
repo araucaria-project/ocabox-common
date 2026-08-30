@@ -475,6 +475,10 @@ class ConditionalCycleQuery(BaseCycleQuery):
             # tight T2 does not turn into a renewal storm.
             tightest_t2 = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
                               for r in self._list_request)
+            if tightest_t2 < 1.0:
+                logger.warning(f"{self}: time_of_data_max_age {tightest_t2}s is below the long-poll "
+                               f"transport resolution — transport-death detection is floored at ~1s "
+                               f"(a healthy server still enforces the exact bound server-side)")
             window = max(1.0, tightest_t2)
             if window < self._timeout:
                 self._timeout = window
@@ -522,14 +526,21 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 self._last_response = result
                 missed = 0
                 not_clear_result = True  # if it gets some result return it for callback
-                # Record truthful values; any real value ends the current
-                # staleness episode (a later one may synthesize again). A
-                # rich stale-None delivered by a >=2.6 server (v=None +
-                # reason tag) is also healthy contact — and it means the
-                # consumer is already informed, so client-side synthesis
-                # must not duplicate it. Classification is order-independent:
-                # batch-wide flags are decided after scanning the whole batch.
+                # Record truthful values; a fully-healthy batch ends the
+                # current staleness episode (a later one may synthesize
+                # again). A rich stale-None delivered by a >=2.6 server
+                # (v=None + reason tag) is also healthy contact — and it
+                # means the consumer is already informed, so client-side
+                # synthesis must not duplicate it. Classification is
+                # order-independent, and the batch-wide clock/flags move only
+                # when the WHOLE batch is healthy (values, server-Nones, 4004
+                # renewals): a mixed [healthy, error] stream must not mask
+                # the erroring member forever — whole-batch semantics cut
+                # both ways.
                 saw_value = saw_server_none = False
+                batch_healthy = all(
+                    resp.status or (resp.error is not None and resp.error.code == 4004)
+                    for resp in result)
                 for i, resp in enumerate(result[:len(self._last_good)]):
                     if resp.status and resp.value is not None:
                         if resp.value.v is not None:
@@ -537,13 +548,13 @@ class ConditionalCycleQuery(BaseCycleQuery):
                             saw_value = True
                         elif 'reason' in resp.value.tags:
                             saw_server_none = True
-                if saw_value or saw_server_none:
+                if batch_healthy and (saw_value or saw_server_none):
                     self._last_contact_ts = time.monotonic()
-                if saw_value:
-                    self._stale_delivered = False
-                    self._timeout_log_state.reset()
-                elif saw_server_none:
-                    self._stale_delivered = True
+                    if saw_value:
+                        self._stale_delivered = False
+                        self._timeout_log_state.reset()
+                    elif saw_server_none:
+                        self._stale_delivered = True
                 # ----- Error dispatch driven by self._error_policy -----
                 # See ``error_policy.py`` for the action vocabulary
                 # (RETRY / NOTIFY / STOP) and the per-severity rules. The
@@ -745,10 +756,13 @@ class ConditionalCycleQuery(BaseCycleQuery):
             return False
         now = time.time()
         silence = time.monotonic() - self._last_contact_ts
-        for r in self._list_request:
-            max_age = r.time_of_data_max_age or 2 * r.time_of_data_tolerance
-            if silence <= max_age:
-                return False  # still truthful for this client (within T2) — keep masking
+        # Whole-batch synthesis triggers at the TIGHTEST bound: a late None
+        # violates that member's truth bound, an early None for a looser
+        # member is merely conservative (masking is permitted, not mandated).
+        tightest_t2 = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
+                          for r in self._list_request)
+        if silence <= tightest_t2:
+            return False  # still truthful (within the tightest T2) — keep masking
         batch = []
         for i, r in enumerate(self._list_request):
             tags = {'reason': reason}
@@ -781,9 +795,9 @@ class ConditionalCycleQuery(BaseCycleQuery):
         if not self._stale_opt_in or self._stale_delivered:
             return None
         silence = time.monotonic() - self._last_contact_ts
-        worst = max((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
-                    for r in self._list_request)
-        return worst - silence
+        tightest = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
+                       for r in self._list_request)
+        return tightest - silence
 
     async def _backoff_sleep(self, retry_delay: float, reason) -> None:
         """Sleep the retry backoff, waking at the T2 deadline if it falls

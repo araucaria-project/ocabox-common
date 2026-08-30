@@ -331,6 +331,59 @@ class TestLongPollWindowCap(unittest.IsolatedAsyncioTestCase):
         cq.stop()
 
 
+class TestBatchSemantics(unittest.IsolatedAsyncioTestCase):
+
+    async def test_mixed_t2_batch_synthesizes_at_the_tightest_bound(self):
+        """A late None violates the tight member's truth bound; an early None
+        for the loose member is merely conservative — trigger at min(T2)."""
+        r1 = make_request(addr='test.a', tolerance=0.05)
+        r1.time_of_data_max_age = 0.15
+        r2 = make_request(addr='test.b', tolerance=0.05)
+        r2.time_of_data_max_age = 5.0
+        script = [[make_ok_response(addr='test.a', v=1), make_ok_response(addr='test.b', v=2)],
+                  [make_error_response(addr='test.a'), make_error_response(addr='test.b')]]
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs, list_request=[r1, r2],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls, t0, stamps = [], asyncio.get_event_loop().time(), []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+            stamps.append(asyncio.get_event_loop().time() - t0)
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=2, timeout=2.0)
+        await cq.stop_and_wait()
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertTrue(all(r.value.v is None for r in calls[1]), 'whole-batch None')
+        self.assertLess(stamps[1], 1.0,
+                        f'None at +{stamps[1]:.2f}s — waited for the LOOSE bound instead of the tight one')
+
+    async def test_mixed_healthy_error_batch_does_not_mask_forever(self):
+        """A repeated [healthy value, error] batch must not refresh the
+        contact clock — the erroring member is owed its None at T2."""
+        script = [[make_ok_response(addr='test.a', v=1), make_ok_response(addr='test.b', v=2)],
+                  [make_ok_response(addr='test.a', v=1), make_error_response(addr='test.b')]]
+        r1 = make_request(addr='test.a', tolerance=0.05)
+        r2 = make_request(addr='test.b', tolerance=0.05)
+        for r in (r1, r2):
+            r.time_of_data_max_age = 0.15
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs, list_request=[r1, r2],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=2, timeout=2.0)
+        await cq.stop_and_wait()
+        nones = [c for c in calls if any(r.value is not None and r.value.v is None for r in c)]
+        self.assertEqual(len(nones), 1,
+                         'the erroring member must produce exactly one whole-batch stale-None')
+
+
 class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
 
     async def test_router_silence_beyond_tolerance_delivers_stale_none_once(self):
