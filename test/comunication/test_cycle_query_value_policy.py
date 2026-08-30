@@ -465,8 +465,33 @@ class TestRound5Regressions(unittest.IsolatedAsyncioTestCase):
         await cq.stop_and_wait()
         self.assertGreaterEqual(len(calls), 2)
         self.assertTrue(all(r.value is not None and r.value.v is None for r in calls[1]))
+        self.assertEqual(calls[1][0].value.tags['reason'], 2003,
+                         'the error AFTER the 4004 must supply the synthesis reason')
         self.assertLess(stamps[1], 1.0,
                         f'None at +{stamps[1]:.2f}s — renewal-first ordering postponed synthesis')
+
+    async def test_critical_after_renewal_stops_the_subscription(self):
+        """A CRITICAL member after a 4004 must be dispatched (STOP), not be
+        swallowed by the renewal branch's early exit."""
+        r1 = make_request(addr='test.a')
+        r2 = make_request(addr='test.b')
+        script = [[make_error_response(addr='test.a', code=4004,
+                                       severity=ResponseError.SEVERITY_TEMPORARY),
+                   make_error_response(addr='test.b', code=3002,
+                                       severity=ResponseError.SEVERITY_CRITICAL)]]
+        cq = ConditionalCycleQuery(crs=ScriptedSolver(script), list_request=[r1, r2],
+                                   delay=0.01, error_policy=ErrorPolicy.SERVICE)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=1, timeout=1.0)
+        await asyncio.sleep(0.05)
+        stopped = cq.is_stopped() or (cq._task is not None and cq._task.done())
+        await cq.stop_and_wait()
+        self.assertTrue(stopped, 'CRITICAL must stop the subscription even behind a 4004')
 
 
 class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):

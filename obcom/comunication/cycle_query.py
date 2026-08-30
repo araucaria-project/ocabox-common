@@ -587,8 +587,11 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         # not postpone the erroring member's stale-None.
                         if batch_healthy:
                             self._last_contact_ts = time.monotonic()
+                        # keep scanning: a later member may carry a real error
+                        # that must set the action/reason (a CRITICAL after a
+                        # 4004 must STOP, not be mistaken for a renewal)
                         continue_while = True
-                        break
+                        continue
                     if r.error is None:
                         # Response carried ``status=False`` without an
                         # error object — preserve the historical "stop"
