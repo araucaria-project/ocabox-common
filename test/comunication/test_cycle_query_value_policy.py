@@ -1,0 +1,370 @@
+"""Tests for the Staleness Contract's truth axis in ConditionalCycleQuery.
+
+Phase 1 (ocabox-common#9 of epic ocabox-common#8): a declared
+``ValuePolicy`` is serialized into cyclic-query ``request_data`` and, for
+``NONE``, the client library synthesizes a rich ``Value(None)`` once
+silence (router timeouts, retried server errors) outlives the
+subscription's ``time_of_data_tolerance``. Undeclared policies must be
+bit-for-bit inert — that is the deployment-safety property that lets
+1.3.0 ship before ocabox-server 2.5.2 reaches production.
+"""
+
+import asyncio
+import unittest
+from typing import List
+
+from obcom.comunication.comunication_error import CommunicationTimeoutError
+from obcom.comunication.cycle_query import ConditionalCycleQuery
+from obcom.comunication.error_policy import (
+    Backoff,
+    ErrorPolicy,
+    SeverityAction,
+    SeverityRule,
+    ValuePolicy,
+)
+from obcom.data_colection.address import Address
+from obcom.data_colection.response_error import ResponseError
+from obcom.data_colection.value import Value
+from obcom.data_colection.value_call import ValueRequest, ValueResponse
+
+
+def make_ok_response(addr: str = 'test.subject', v=42, ts: float = 0.0) -> ValueResponse:
+    return ValueResponse(address=Address(addr),
+                         value=Value(v=v, ts=ts, tags={'from_cf': True}),
+                         status=True, error=None)
+
+
+def make_error_response(addr: str = 'test.subject', code: int = 2003,
+                        severity: str = ResponseError.SEVERITY_NORMAL) -> ValueResponse:
+    return ValueResponse(address=Address(addr), value=None, status=False,
+                         error=ResponseError(code=code, message='Synthetic error',
+                                             severity=severity, component_name='test'))
+
+
+class ScriptedSolver:
+    """Serves scripted batches; an Exception entry is raised instead.
+
+    The last entry repeats forever. Every ``send_request`` call records
+    the (already-copied) requests it was given, so tests can assert on
+    the request_data actually put on the wire.
+    """
+
+    def __init__(self, script: List):
+        self._script = script
+        self._calls = 0
+        self.seen_requests: List[List[ValueRequest]] = []
+
+    async def send_request(self, requests, timeout=None, no_wait=False):
+        idx = min(self._calls, len(self._script) - 1)
+        self._calls += 1
+        self.seen_requests.append(list(requests))
+        await asyncio.sleep(0)
+        entry = self._script[idx]
+        if isinstance(entry, BaseException):
+            raise entry
+        return list(entry)
+
+
+def make_request(addr: str = 'test.subject', tolerance: float = 1.0) -> ValueRequest:
+    return ValueRequest(address=Address(addr), time_of_data_tolerance=tolerance)
+
+
+NONE_POLICY = ErrorPolicy.SERVICE.with_overrides(
+    normal=SeverityRule(action=SeverityAction.RETRY, backoff=Backoff.immediate()),
+    value_policy=ValuePolicy.NONE,
+)
+
+
+async def _drive(cq: ConditionalCycleQuery, calls: list, target: int, timeout: float = 1.0):
+    cq.start()
+    deadline = asyncio.get_event_loop().time() + timeout
+    while len(calls) < target and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.005)
+    cq.stop()
+
+
+class TestValuePolicyWire(unittest.IsolatedAsyncioTestCase):
+    """Serialization of the value_policy fragment into request_data."""
+
+    async def test_declared_policy_serializes_fragment(self):
+        crs = ScriptedSolver([[make_ok_response()]])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request()],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls = []
+        cq.add_callback_async_method(lambda r: calls.append(r) or asyncio.sleep(0))
+        await _drive(cq, calls, target=1)
+        await cq.stop_and_wait()
+        self.assertTrue(crs.seen_requests)
+        for r in crs.seen_requests[0]:
+            self.assertEqual(r.request_data.get('value_policy'), 'none')
+
+    async def test_undeclared_policy_sends_no_fragment(self):
+        """SERVICE/INTERACTIVE stay inert — safe against pre-2.5.2 servers."""
+        crs = ScriptedSolver([[make_ok_response()]])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request()],
+                                   delay=0.01, error_policy=ErrorPolicy.SERVICE)
+        calls = []
+        cq.add_callback_async_method(lambda r: calls.append(r) or asyncio.sleep(0))
+        await _drive(cq, calls, target=1)
+        await cq.stop_and_wait()
+        self.assertTrue(crs.seen_requests)
+        for batch in crs.seen_requests:
+            for r in batch:
+                self.assertNotIn('value_policy', r.request_data)
+
+
+class TestMaxAgeWire(unittest.IsolatedAsyncioTestCase):
+    """T2 (`time_of_data_max_age`) rides as a first-class ValueRequest field."""
+
+    async def test_declared_policy_defaults_max_age_to_twice_tolerance(self):
+        crs = ScriptedSolver([[make_ok_response()]])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.5)],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls = []
+        cq.add_callback_async_method(lambda r: calls.append(r) or asyncio.sleep(0))
+        await _drive(cq, calls, target=1)
+        await cq.stop_and_wait()
+        self.assertEqual(crs.seen_requests[0][0].time_of_data_max_age, 1.0)
+
+    async def test_explicit_max_age_is_kept_and_clamped_to_tolerance(self):
+        r = ValueRequest(address=Address('test.subject'), time_of_data_tolerance=1.0,
+                         time_of_data_max_age=5.0)
+        self.assertEqual(r.time_of_data_max_age, 5.0)
+        clamped = ValueRequest(address=Address('test.subject'), time_of_data_tolerance=2.0,
+                               time_of_data_max_age=0.5)
+        self.assertEqual(clamped.time_of_data_max_age, 2.0)
+
+    async def test_undeclared_policy_leaves_max_age_unset(self):
+        crs = ScriptedSolver([[make_ok_response()]])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request()],
+                                   delay=0.01, error_policy=ErrorPolicy.SERVICE)
+        calls = []
+        cq.add_callback_async_method(lambda r: calls.append(r) or asyncio.sleep(0))
+        await _drive(cq, calls, target=1)
+        await cq.stop_and_wait()
+        self.assertIsNone(crs.seen_requests[0][0].time_of_data_max_age)
+
+    async def test_synthesis_waits_for_max_age_not_tolerance(self):
+        """Between T1 and T2 the last value is still the truth — no None yet."""
+        script = [[make_ok_response(v=6)], CommunicationTimeoutError(message='x')]
+        crs = ScriptedSolver(script)
+        request = make_request(tolerance=0.05)
+        request.time_of_data_max_age = 0.6
+        cq = ConditionalCycleQuery(crs=crs, list_request=[request],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        await asyncio.sleep(0.3)  # well past T1, well before T2
+        self.assertEqual(len(calls), 1, 'no stale-None inside the (T1, T2] window')
+        deadline = asyncio.get_event_loop().time() + 2.0
+        while len(calls) < 2 and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        cq.stop()
+        await cq.stop_and_wait()
+        self.assertEqual(len(calls), 2)
+        self.assertIsNone(calls[1][0].value.v)
+
+
+class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
+
+    async def test_router_silence_beyond_tolerance_delivers_stale_none_once(self):
+        script = [[make_ok_response(v=42)], CommunicationTimeoutError(message='no router')]
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=NONE_POLICY, max_missed_msg=3)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 2.0
+        while len(calls) < 2 and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.005)
+        # Let further timeouts churn to prove the None is not repeated
+        # and that the query survives them (missed counter retired).
+        await asyncio.sleep(0.2)
+        alive = not cq.is_stopped()
+        cq.stop()
+        await cq.stop_and_wait()
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls[0][0].value.v, 42)
+        stale = calls[1][0]
+        self.assertTrue(stale.status)
+        self.assertIsNone(stale.value.v)
+        self.assertEqual(stale.value.tags['reason'], 4002)
+        self.assertEqual(stale.value.tags['last_good'], 42)
+        self.assertEqual(stale.value.tags['last_good_ts'], 0.0)
+        self.assertEqual(len(calls), 2, "stale-None must be delivered exactly once per episode")
+        # Tolerance clock replaces the missed counter for opted-in queries.
+        self.assertTrue(alive, "opted-in subscription must survive max_missed_msg timeouts")
+
+    async def test_normal_error_retry_beyond_tolerance_delivers_stale_none(self):
+        script = [[make_ok_response(v=7)], [make_error_response(code=2003)]]
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=2, timeout=2.0)
+        await cq.stop_and_wait()
+        self.assertGreaterEqual(len(calls), 2)
+        stale = calls[1][0]
+        self.assertIsNone(stale.value.v)
+        self.assertEqual(stale.value.tags['reason'], 2003)
+        self.assertEqual(stale.value.tags['last_good'], 7)
+
+    async def test_recovery_resets_episode_and_allows_second_synthesis(self):
+        err = make_error_response(code=2003)
+        # Paced backoff so each error episode outlives the 0.05 s tolerance
+        # before the script moves on.
+        policy = ErrorPolicy.SERVICE.with_overrides(
+            normal=SeverityRule(action=SeverityAction.RETRY, backoff=Backoff.fixed(0.01)),
+            value_policy=ValuePolicy.NONE,
+        )
+        script = ([[make_ok_response(v=1)]] + [[err]] * 40
+                  + [[make_ok_response(v=2, ts=1.0)]] + [[err]])
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=policy)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=4, timeout=3.0)
+        await cq.stop_and_wait()
+        self.assertGreaterEqual(len(calls), 4)
+        values = [c[0].value.v for c in calls[:4]]
+        self.assertEqual(values, [1, None, 2, None])
+        self.assertEqual(calls[3][0].value.tags['last_good'], 2)
+
+    async def test_last_good_policy_does_not_synthesize(self):
+        policy = ErrorPolicy.SERVICE.with_overrides(value_policy=ValuePolicy.LAST_GOOD)
+        script = [[make_ok_response(v=9)], CommunicationTimeoutError(message='no router')]
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=policy)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=2, timeout=0.5)
+        await cq.stop_and_wait()
+        # Fragment serialized, but the aging value is left in place.
+        self.assertEqual(crs.seen_requests[0][0].request_data.get('value_policy'), 'last_good')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0].value.v, 9)
+
+    async def test_4004_renewals_keep_value_truthful(self):
+        """Long-poll renewals are healthy heartbeats: a value stable for
+        longer than the tolerance is NOT stale while renewals confirm it."""
+        script = [[make_ok_response(v=5)],
+                  [make_error_response(code=4004, severity=ResponseError.SEVERITY_TEMPORARY)]]
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=2, timeout=0.5)
+        alive = not cq.is_stopped()
+        await cq.stop_and_wait()
+        self.assertEqual(len(calls), 1, "no stale-None while 4004 renewals confirm freshness")
+        self.assertTrue(alive)
+
+    async def test_server_delivered_stale_none_is_acknowledged_not_duplicated(self):
+        """A >=2.6 server's rich None counts as healthy contact, informs the
+        consumer (no client-side duplicate), and its ts is echoed as
+        time_of_known_change so the server will not re-deliver it."""
+        server_none = ValueResponse(
+            address=Address('test.subject'),
+            value=Value(v=None, ts=50.0, tags={'reason': 4009, 'from_cf': True,
+                                               'last_good': 42, 'last_good_ts': 1.0}),
+            status=True, error=None)
+        script = [[make_ok_response(v=42, ts=1.0)], [server_none],
+                  CommunicationTimeoutError(message='router gone')]
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 1.0
+        while len(calls) < 2 and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.005)
+        # timeouts churn well past the tolerance — no third (synthesized) None
+        await asyncio.sleep(0.2)
+        cq.stop()
+        await cq.stop_and_wait()
+        self.assertEqual(len(calls), 2)
+        self.assertIsNone(calls[1][0].value.v)
+        self.assertEqual(calls[1][0].value.tags['reason'], 4009)
+        # the server None was acknowledged as a witnessed change
+        self.assertEqual(crs.seen_requests[-1][0].request_data.get('time_of_known_change'), 50.0)
+
+    async def test_stale_none_clears_time_of_known_change(self):
+        """A synthesized None is an answer the server never witnessed: the
+        request drops its change bookkeeping so that the first successful
+        contact redelivers the current value unconditionally."""
+        script = [[make_ok_response(v=3, ts=123.0)], CommunicationTimeoutError(message='x')]
+        crs = ScriptedSolver(script)
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=NONE_POLICY)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        await _drive(cq, calls, target=2, timeout=2.0)
+        await asyncio.sleep(0.05)  # a few more request cycles after synthesis
+        await cq.stop_and_wait()
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertIsNone(calls[1][0].value.v)
+        last_batch = crs.seen_requests[-1]
+        self.assertNotIn('time_of_known_change', last_batch[0].request_data)
+        self.assertNotIn('no_send_before', last_batch[0].request_data)
+
+
+class TestPolicyShape(unittest.TestCase):
+
+    def test_default_policies_are_undeclared(self):
+        for preset in (ErrorPolicy.INTERACTIVE, ErrorPolicy.SERVICE, ErrorPolicy.FAIL_FAST):
+            self.assertIsNone(preset.value_policy)
+
+    def test_display_preset(self):
+        p = ErrorPolicy.DISPLAY
+        self.assertIs(p.value_policy, ValuePolicy.NONE)
+        self.assertEqual(p.normal.action, SeverityAction.RETRY)
+        self.assertEqual(p.critical.action, SeverityAction.NOTIFY)
+
+    def test_with_overrides_accepts_value_policy_string(self):
+        p = ErrorPolicy.SERVICE.with_overrides(value_policy='none')
+        self.assertIs(p.value_policy, ValuePolicy.NONE)
+        # rules untouched
+        self.assertEqual(p.normal.action, ErrorPolicy.SERVICE.normal.action)
+
+
+if __name__ == '__main__':
+    unittest.main()

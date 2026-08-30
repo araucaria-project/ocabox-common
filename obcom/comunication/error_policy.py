@@ -48,6 +48,32 @@ class SeverityAction(str, Enum):
     STOP = 'stop'
 
 
+class ValuePolicy(str, Enum):
+    """Truth axis of the Staleness Contract (vault: `Architecture/Staleness
+    Contract (unified read policy)`).
+
+    Decides what the client receives once the last known value no longer
+    satisfies its own ``time_of_data_tolerance``:
+
+    * ``RAISE``     — the underlying error surfaces (per severity actions).
+    * ``NONE``      — a rich ``Value(None, ts=now, tags={reason, last_good,
+      last_good_ts})`` is delivered: "there is no truthful answer right now".
+    * ``LAST_GOOD`` — the stale value keeps being served; for bare-``.v``
+      clients that cannot render tags. Selectable, never a preset default.
+
+    An :class:`ErrorPolicy` whose ``value_policy`` is ``None`` (undeclared)
+    behaves exactly as before this axis existed — nothing is serialized into
+    requests and no stale synthesis happens. Declaring a value policy also
+    sends the ``value_policy`` fragment in cyclic-query ``request_data``,
+    which requires ocabox-server >= 2.5.2 (older servers forward unknown
+    request fields to connectors — the 2.3.12 bug class).
+    """
+
+    RAISE = 'raise'
+    NONE = 'none'
+    LAST_GOOD = 'last_good'
+
+
 # ---------------------------------------------------------------------------
 # Backoff strategies
 # ---------------------------------------------------------------------------
@@ -241,18 +267,23 @@ class ErrorPolicy:
     temporary: SeverityRule
     normal: SeverityRule
     critical: SeverityRule
+    #: Truth axis (Staleness Contract). ``None`` = undeclared → fully
+    #: backward-compatible behaviour; see :class:`ValuePolicy`.
+    value_policy: Optional[ValuePolicy] = None
 
     # Class-level presets — set after the class body so they are full
     # ``ErrorPolicy`` instances. See module bottom.
     INTERACTIVE: ClassVar['ErrorPolicy']
     SERVICE: ClassVar['ErrorPolicy']
     FAIL_FAST: ClassVar['ErrorPolicy']
+    DISPLAY: ClassVar['ErrorPolicy']
 
     def with_overrides(self, *,
                        temporary: Optional[SeverityRule] = None,
                        normal: Optional[SeverityRule] = None,
-                       critical: Optional[SeverityRule] = None) -> 'ErrorPolicy':
-        """Return a copy with selected rules replaced."""
+                       critical: Optional[SeverityRule] = None,
+                       value_policy: Optional[ValuePolicy] = None) -> 'ErrorPolicy':
+        """Return a copy with selected rules/axes replaced."""
         kwargs = {}
         if temporary is not None:
             kwargs['temporary'] = temporary
@@ -260,6 +291,8 @@ class ErrorPolicy:
             kwargs['normal'] = normal
         if critical is not None:
             kwargs['critical'] = critical
+        if value_policy is not None:
+            kwargs['value_policy'] = ValuePolicy(value_policy)
         return replace(self, **kwargs)
 
     def rule_for(self, severity: Optional[str]) -> SeverityRule:
@@ -326,6 +359,37 @@ ErrorPolicy.FAIL_FAST = ErrorPolicy(
 )
 
 
+# Unattended displays — TOI screens, oca_monitor walls. Like SERVICE it
+# nurses itself through outages, but it also declares the truth axis:
+# once the shown value is older than the subscription tolerance the widget
+# receives a rich ``Value(None)`` (and can grey out / render last_good from
+# tags) instead of silently displaying stale numbers. CRITICAL uses NOTIFY
+# rather than STOP: a wall display must show the error *and* keep healing
+# itself — nobody is there to restart a dead widget.
+#
+# The pre-existing presets deliberately keep ``value_policy=None``
+# (undeclared): declaring it makes clients send a new request field, which
+# is only safe against ocabox-server >= 2.5.2 (the 2.3.12 lesson). SERVICE
+# flips to NONE in phase 4 of the Staleness Contract, once tic is upgraded.
+ErrorPolicy.DISPLAY = ErrorPolicy(
+    temporary=SeverityRule(
+        action=SeverityAction.RETRY,
+        backoff=Backoff.exponential(initial=0.1, ceiling=5.0),
+    ),
+    normal=SeverityRule(
+        action=SeverityAction.RETRY,
+        backoff=Backoff.staged([(2.0, 3), (10.0, 6), (60.0, None)]),
+        log=LogPolicy(first_n=3, then_every_seconds=3600.0),
+    ),
+    critical=SeverityRule(
+        action=SeverityAction.NOTIFY,
+        backoff=Backoff.staged([(10.0, 3), (60.0, None)]),
+        log=LogPolicy(first_n=3, then_every_seconds=3600.0),
+    ),
+    value_policy=ValuePolicy.NONE,
+)
+
+
 __all__ = [
     'Backoff',
     'Budget',
@@ -333,4 +397,5 @@ __all__ = [
     'LogPolicy',
     'SeverityAction',
     'SeverityRule',
+    'ValuePolicy',
 ]
