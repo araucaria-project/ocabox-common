@@ -141,6 +141,7 @@ class TreeOtherError(BaseCodedError):
                           (7, 'Wrong argument'),
                           (8, 'Device busy with another operation in progress'),
                           (9, 'Device reported an error'),
+                          (10, 'Consumer event loop starved'),
                           ]
 
     def __init__(self, code: int = CODE_GROUP, message="", severity: str = None, **kwargs):

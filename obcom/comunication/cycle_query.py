@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__.rsplit('.')[-1])
 # is SERVICE-style (i.e. NORMAL action = RETRY).  Exposed as a module
 # constant so tests can patch it to 0 without touching asyncio.sleep.
 _CATCH_ALL_RETRY_DELAY = 60.0
+_ROUTER_TIMEOUT_REASON = 4002
+_EVENT_LOOP_STARVED_REASON = 4010
 
 
 class _SeverityRetryState:
@@ -513,11 +515,26 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # Router-silence warnings are throttled for opted-in subscriptions
         # (the tolerance clock, not the operator, owns the outage there).
         self._timeout_log_state: _LogPolicyState = self._error_policy.normal.log.make_state()
+        self._starvation_episode_active: bool = False
+
+    def _detect_local_starvation(self, poll_started: Optional[float]):
+        """Classify a timeout wake-up as local event-loop starvation.
+
+        ``poll_started`` is monotonic, while the transport timeout sent to
+        ``send_request`` is wall-clock; an NTP step can temporarily skew this
+        comparison, which is acceptable for this local-health heuristic.
+        """
+        if poll_started is None:
+            return False, 0.0, 0.0
+        wake_lag = time.monotonic() - (poll_started + self._timeout)
+        lag_threshold = max(0.5, 0.1 * self._timeout)
+        return wake_lag > lag_threshold, wake_lag, lag_threshold
 
     async def _send_message(self):
         missed = 0
         not_clear_result = False
         self._errors = None
+        poll_started = None
         while True:
             start_time = time.time()
 
@@ -528,9 +545,12 @@ class ConditionalCycleQuery(BaseCycleQuery):
             try:
                 not_clear_result = False
                 requests = self._get_list_request_with_extinction()
+                # one monotonic stamp serves both consumers: the renewal
+                # credibility gate (obcom#13) and starvation detection (#11)
                 poll_started = time.monotonic()
                 result = await self._CRS.send_request(requests=requests, timeout=start_time + self._timeout,
                                                       no_wait=False)
+                self._starvation_episode_active = False
                 self._errors = None
                 if result is None:
                     logger.error(f"{self}: Can not get response for giving request")
@@ -733,6 +753,21 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 self._event.set()
                 break
             except CommunicationTimeoutError:
+                is_starvation, wake_lag, lag_threshold = self._detect_local_starvation(poll_started)
+                if is_starvation:
+                    self._last_response = []
+                    if not self._starvation_episode_active:
+                        logger.warning(
+                            f'{self}: event loop starved for {wake_lag:.3f}s '
+                            f'(threshold {lag_threshold:.3f}s, {len(self._list_request)} subscriptions affected)')
+                        self._starvation_episode_active = True
+                    if self._maybe_synthesize_stale(reason=_EVENT_LOOP_STARVED_REASON):
+                        await self._pulse_event()
+                    else:
+                        self._hold_stale_view()
+                    await asyncio.sleep(0)
+                    continue
+                self._starvation_episode_active = False
                 missed += 1
                 self._last_response = []
                 msg = (f'{self}: The waiting time for the message has expired. The router is not '
@@ -746,7 +781,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 # Router silence: the lowest layer that still has data is
                 # this one, so stale-synthesis happens here (4002 =
                 # "Application do not answer").
-                if self._maybe_synthesize_stale(reason=4002):
+                if self._maybe_synthesize_stale(reason=_ROUTER_TIMEOUT_REASON):
                     await self._pulse_event()
                 else:
                     self._hold_stale_view()
