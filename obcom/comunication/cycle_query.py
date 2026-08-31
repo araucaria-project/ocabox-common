@@ -497,6 +497,13 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # the delivered truth: raw error batches and empty timeout results
         # must not replace it in ``_last_response``.
         self._stale_view: Optional[list] = None
+        # A 4004 renewal counts as healthy contact only when it arrived
+        # after a real long-poll wait: an INSTANT 4004 (milliseconds instead
+        # of ~the window) is the server refusing to do any work — e.g. its
+        # reply margin exceeds the whole request window (obsrv#44) — and must
+        # NOT feed the T2 clock, or a livelock of instant renewals starves
+        # the consumer of both values and the honest stale-None (obcom#13).
+        self._renewal_credible_after: float = 0.5 * self._timeout
         # The T2 clock runs from the last *healthy contact* — a batch of
         # real values or a 4004 long-poll renewal (server alive, value
         # unchanged-and-fresh). It deliberately does NOT run from the last
@@ -510,16 +517,16 @@ class ConditionalCycleQuery(BaseCycleQuery):
         self._timeout_log_state: _LogPolicyState = self._error_policy.normal.log.make_state()
         self._starvation_episode_active: bool = False
 
-    def _detect_local_starvation(self, expected_wake_ts: Optional[float]):
+    def _detect_local_starvation(self, poll_started: Optional[float]):
         """Classify a timeout wake-up as local event-loop starvation.
 
-        ``expected_wake_ts`` is monotonic, while the transport timeout sent to
+        ``poll_started`` is monotonic, while the transport timeout sent to
         ``send_request`` is wall-clock; an NTP step can temporarily skew this
         comparison, which is acceptable for this local-health heuristic.
         """
-        if expected_wake_ts is None:
+        if poll_started is None:
             return False, 0.0, 0.0
-        wake_lag = time.monotonic() - expected_wake_ts
+        wake_lag = time.monotonic() - (poll_started + self._timeout)
         lag_threshold = max(0.5, 0.1 * self._timeout)
         return wake_lag > lag_threshold, wake_lag, lag_threshold
 
@@ -527,7 +534,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
         missed = 0
         not_clear_result = False
         self._errors = None
-        expected_wake_ts = None
+        poll_started = None
         while True:
             start_time = time.time()
 
@@ -538,7 +545,9 @@ class ConditionalCycleQuery(BaseCycleQuery):
             try:
                 not_clear_result = False
                 requests = self._get_list_request_with_extinction()
-                expected_wake_ts = time.monotonic() + self._timeout
+                # one monotonic stamp serves both consumers: the renewal
+                # credibility gate (obcom#13) and starvation detection (#11)
+                poll_started = time.monotonic()
                 result = await self._CRS.send_request(requests=requests, timeout=start_time + self._timeout,
                                                       no_wait=False)
                 self._starvation_episode_active = False
@@ -610,10 +619,19 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         # A renewal is a healthy heartbeat: the server is up
                         # and would have reported errors — the shown value is
                         # still truthful, so the T2 clock restarts. Gated on
-                        # whole-batch health: a mixed [4004, error] batch must
-                        # not postpone the erroring member's stale-None.
-                        if batch_healthy:
+                        # whole-batch health (a mixed [4004, error] batch must
+                        # not postpone the erroring member's stale-None) AND
+                        # on credibility: only a renewal that arrived after a
+                        # real long-poll wait confirms anything; an instant
+                        # 4004 is the server refusing work (see __init__).
+                        if batch_healthy and (
+                                time.monotonic() - poll_started >= self._renewal_credible_after):
                             self._last_contact_ts = time.monotonic()
+                        if last_error_code is None:
+                            # carrier for a stale-None synthesized during a
+                            # renewal livelock; a real error found later in
+                            # the scan overwrites it
+                            last_error_code = 4004
                         # keep scanning: a later member may carry a real error
                         # that must set the action/reason (a CRITICAL after a
                         # 4004 must STOP, not be mistaken for a renewal)
@@ -735,7 +753,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 self._event.set()
                 break
             except CommunicationTimeoutError:
-                is_starvation, wake_lag, lag_threshold = self._detect_local_starvation(expected_wake_ts)
+                is_starvation, wake_lag, lag_threshold = self._detect_local_starvation(poll_started)
                 if is_starvation:
                     self._last_response = []
                     if not self._starvation_episode_active:
