@@ -495,6 +495,13 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # the delivered truth: raw error batches and empty timeout results
         # must not replace it in ``_last_response``.
         self._stale_view: Optional[list] = None
+        # A 4004 renewal counts as healthy contact only when it arrived
+        # after a real long-poll wait: an INSTANT 4004 (milliseconds instead
+        # of ~the window) is the server refusing to do any work — e.g. its
+        # reply margin exceeds the whole request window (obsrv#44) — and must
+        # NOT feed the T2 clock, or a livelock of instant renewals starves
+        # the consumer of both values and the honest stale-None (obcom#13).
+        self._renewal_credible_after: float = 0.5 * self._timeout
         # The T2 clock runs from the last *healthy contact* — a batch of
         # real values or a 4004 long-poll renewal (server alive, value
         # unchanged-and-fresh). It deliberately does NOT run from the last
@@ -521,6 +528,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
             try:
                 not_clear_result = False
                 requests = self._get_list_request_with_extinction()
+                poll_started = time.monotonic()
                 result = await self._CRS.send_request(requests=requests, timeout=start_time + self._timeout,
                                                       no_wait=False)
                 self._errors = None
@@ -591,10 +599,19 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         # A renewal is a healthy heartbeat: the server is up
                         # and would have reported errors — the shown value is
                         # still truthful, so the T2 clock restarts. Gated on
-                        # whole-batch health: a mixed [4004, error] batch must
-                        # not postpone the erroring member's stale-None.
-                        if batch_healthy:
+                        # whole-batch health (a mixed [4004, error] batch must
+                        # not postpone the erroring member's stale-None) AND
+                        # on credibility: only a renewal that arrived after a
+                        # real long-poll wait confirms anything; an instant
+                        # 4004 is the server refusing work (see __init__).
+                        if batch_healthy and (
+                                time.monotonic() - poll_started >= self._renewal_credible_after):
                             self._last_contact_ts = time.monotonic()
+                        if last_error_code is None:
+                            # carrier for a stale-None synthesized during a
+                            # renewal livelock; a real error found later in
+                            # the scan overwrites it
+                            last_error_code = 4004
                         # keep scanning: a later member may carry a real error
                         # that must set the action/reason (a CRITICAL after a
                         # 4004 must STOP, not be mistaken for a renewal)

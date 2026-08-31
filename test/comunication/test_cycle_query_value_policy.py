@@ -737,6 +737,9 @@ class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][0].value.v, 9)
 
     async def test_4004_renewals_keep_value_truthful(self):
+        # NOTE: ScriptedSolver answers instantly, so renewals would fail the
+        # credibility gate (obcom#13) — this test covers the CREDIBLE-renewal
+        # semantics, so the gate is opened explicitly below.
         """Long-poll renewals are healthy heartbeats: a value stable for
         longer than the tolerance is NOT stale while renewals confirm it."""
         script = [[make_ok_response(v=5)],
@@ -748,6 +751,7 @@ class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
 
         async def on_msg(resp):
             calls.append(list(resp))
+        cq._renewal_credible_after = 0.0  # instant scripted renewals are credible here
 
         cq.add_callback_async_method(on_msg)
         await _drive(cq, calls, target=2, timeout=0.5)
@@ -755,6 +759,37 @@ class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
         await cq.stop_and_wait()
         self.assertEqual(len(calls), 1, "no stale-None while 4004 renewals confirm freshness")
         self.assertTrue(alive)
+
+    async def test_instant_renewal_livelock_delivers_punctual_stale_none(self):
+        """obcom#13: endless INSTANT 4004s (server refusing work — e.g. its
+        reply margin exceeds the request window) must not feed the T2 clock;
+        past T2 the consumer gets exactly one rich None per episode."""
+        request = make_request(tolerance=0.05)
+        request.time_of_data_max_age = 0.1
+        crs = ScriptedSolver([[make_error_response(code=4004,
+                                                   severity=ResponseError.SEVERITY_TEMPORARY)]])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[request],
+                                   delay=0.01, error_policy=NONE_POLICY, max_missed_msg=-1)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 2.0
+        while len(calls) < 1 and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.3)   # more instant renewals — no duplicates
+        alive = not cq.is_stopped() and not (cq._task is not None and cq._task.done())
+        cq.stop()
+        await cq.stop_and_wait()
+        self.assertEqual(len(calls), 1, 'exactly one rich None per livelock episode')
+        stale = calls[0][0]
+        self.assertTrue(stale.status)
+        self.assertIsNone(stale.value.v)
+        self.assertEqual(stale.value.tags['reason'], 4004)
+        self.assertTrue(alive, 'renewal livelock must not stop the subscription')
 
     async def test_server_delivered_stale_none_is_acknowledged_not_duplicated(self):
         """A >=2.6 server's rich None counts as healthy contact, informs the
