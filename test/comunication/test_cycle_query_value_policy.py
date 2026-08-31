@@ -13,6 +13,7 @@ bit-for-bit inert — that is the deployment-safety property that lets
 import asyncio
 import unittest
 from typing import List
+from unittest.mock import patch
 
 from obcom.comunication.comunication_error import CommunicationTimeoutError
 from obcom.comunication.cycle_query import ConditionalCycleQuery
@@ -716,6 +717,48 @@ class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stale.value.tags['reason'], 4002)
         self.assertNotIn('last_good', stale.value.tags)
         self.assertNotIn('last_good_ts', stale.value.tags)
+
+    async def test_starvation_timeout_uses_dedicated_reason_and_does_not_stop(self):
+        policy = ErrorPolicy.INTERACTIVE.with_overrides(value_policy=ValuePolicy.NONE)
+        crs = ScriptedSolver([CommunicationTimeoutError(message='starved loop')])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=policy, max_missed_msg=0)
+        cq._last_contact_ts = cq._last_contact_ts - 2.0
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        with patch.object(cq, '_detect_local_starvation', return_value=(True, 0.8, 0.5)):
+            cq.start()
+            deadline = asyncio.get_event_loop().time() + 1.5
+            while len(calls) < 1 and asyncio.get_event_loop().time() < deadline:
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
+            alive = not cq.is_stopped()
+            cq.stop()
+        await cq.stop_and_wait()
+        self.assertTrue(alive, "starvation episodes must not consume missed-message budget")
+        self.assertGreaterEqual(len(calls), 1)
+        self.assertIsNone(calls[0][0].value.v)
+        self.assertEqual(calls[0][0].value.tags['reason'], 4010)
+
+    async def test_real_timeout_keeps_router_reason_and_missed_stop(self):
+        policy = ErrorPolicy.INTERACTIVE.with_overrides(value_policy=ValuePolicy.NONE)
+        crs = ScriptedSolver([CommunicationTimeoutError(message='router silent')])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=policy, max_missed_msg=0)
+        cq._last_contact_ts = cq._last_contact_ts - 2.0
+        with patch.object(cq, '_detect_local_starvation', return_value=(False, 0.0, 0.5)):
+            cq.start()
+            deadline = asyncio.get_event_loop().time() + 1.0
+            while not cq.is_stopped() and asyncio.get_event_loop().time() < deadline:
+                await asyncio.sleep(0.01)
+        await cq.stop_and_wait()
+        self.assertTrue(cq.is_stopped(), "transport timeout should still obey missed-message stop policy")
+        self.assertTrue(cq._last_response)
+        self.assertEqual(cq._last_response[0].value.tags['reason'], 4002)
 
     async def test_last_good_policy_does_not_synthesize(self):
         policy = ErrorPolicy.SERVICE.with_overrides(value_policy=ValuePolicy.LAST_GOOD)
