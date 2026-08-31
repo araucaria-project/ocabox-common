@@ -511,6 +511,12 @@ class ConditionalCycleQuery(BaseCycleQuery):
         self._starvation_episode_active: bool = False
 
     def _detect_local_starvation(self, expected_wake_ts: Optional[float]):
+        """Classify a timeout wake-up as local event-loop starvation.
+
+        ``expected_wake_ts`` is monotonic, while the transport timeout sent to
+        ``send_request`` is wall-clock; an NTP step can temporarily skew this
+        comparison, which is acceptable for this local-health heuristic.
+        """
         if expected_wake_ts is None:
             return False, 0.0, 0.0
         wake_lag = time.monotonic() - expected_wake_ts
@@ -742,7 +748,6 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     else:
                         self._hold_stale_view()
                     await asyncio.sleep(0)
-                    self._event.clear()
                     continue
                 self._starvation_episode_active = False
                 missed += 1
