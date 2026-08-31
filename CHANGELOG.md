@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.1]
+### Fixed
+- CQ: 4004 renewals feed the T2 contact clock only when they arrive after a
+  real long-poll wait; an instant-renewal livelock now delivers the punctual
+  rich stale-None (reason 4004) instead of starving the consumer (#13)
+
 ## [1.3.0]
 ### Added
 - **Staleness Contract, phase 1**: `value_policy` axis (`RAISE`/`NONE`/`LAST_GOOD`)
