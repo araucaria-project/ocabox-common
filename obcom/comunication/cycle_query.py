@@ -773,11 +773,14 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     now_mono = time.monotonic()
                     if self._starvation_grace_until is None:
                         self._starvation_grace_until = now_mono + self._timeout
+                        self._hold_stale_view()
                     elif now_mono >= self._starvation_grace_until:
                         if self._maybe_synthesize_stale(reason=_EVENT_LOOP_STARVED_REASON):
                             await self._pulse_event()
                         else:
                             self._hold_stale_view()
+                    else:
+                        self._hold_stale_view()
                     await asyncio.sleep(0)
                     continue
                 self._starvation_episode_active = False
@@ -794,11 +797,9 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 # Router silence: the lowest layer that still has data is
                 # this one, so stale-synthesis happens here (4002 =
                 # "Application do not answer").
-                stale_reason = _ROUTER_TIMEOUT_REASON
                 if self._starvation_grace_until is not None:
                     self._starvation_grace_until = None
-                    stale_reason = _EVENT_LOOP_STARVED_REASON
-                if self._maybe_synthesize_stale(reason=stale_reason):
+                if self._maybe_synthesize_stale(reason=_ROUTER_TIMEOUT_REASON):
                     await self._pulse_event()
                 else:
                     self._hold_stale_view()
