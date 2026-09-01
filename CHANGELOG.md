@@ -3,6 +3,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.2]
+### Fixed
+- `ConditionalCycleQuery`: starvation wake-ups now defer stale-None synthesis
+  by one transport window and use the next poll as evidence, avoiding red-blink
+  flapping under GUI/event-loop stalls while preserving punctual stale delivery
+  when silence persists (`reason=4010`).
+
 ## [1.3.1]
 ### Fixed
 - CQ: 4004 renewals feed the T2 contact clock only when they arrive after a
