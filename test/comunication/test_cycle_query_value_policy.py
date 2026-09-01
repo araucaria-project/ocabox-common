@@ -11,6 +11,7 @@ bit-for-bit inert — that is the deployment-safety property that lets
 """
 
 import asyncio
+import time
 import unittest
 from typing import List
 from unittest.mock import patch
@@ -63,6 +64,23 @@ class ScriptedSolver:
         self.seen_requests.append(list(requests))
         await asyncio.sleep(0)
         entry = self._script[idx]
+        if isinstance(entry, BaseException):
+            raise entry
+        return list(entry)
+
+
+class StarvationScriptedSolver(ScriptedSolver):
+    """Scripted solver entry ('starve_timeout', seconds) blocks the loop and times out."""
+
+    async def send_request(self, requests, timeout=None, no_wait=False):
+        idx = min(self._calls, len(self._script) - 1)
+        self._calls += 1
+        self.seen_requests.append(list(requests))
+        entry = self._script[idx]
+        if isinstance(entry, tuple) and len(entry) == 2 and entry[0] == 'starve_timeout':
+            time.sleep(entry[1])
+            raise CommunicationTimeoutError(message='starved loop')
+        await asyncio.sleep(0)
         if isinstance(entry, BaseException):
             raise entry
         return list(entry)
@@ -743,6 +761,86 @@ class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(calls), 1)
         self.assertIsNone(calls[0][0].value.v)
         self.assertEqual(calls[0][0].value.tags['reason'], 4010)
+
+    async def test_starvation_wake_grace_recovers_without_stale_none(self):
+        crs = StarvationScriptedSolver([('starve_timeout', 1.7), [make_ok_response(v=77)]])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
+                                   delay=0.01, error_policy=NONE_POLICY, max_missed_msg=-1)
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 3.0
+        while (not calls or calls[-1][0].value is None or calls[-1][0].value.v is None) \
+                and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.3)
+        alive = not cq.is_stopped()
+        cq.stop()
+        await cq.stop_and_wait()
+        self.assertTrue(alive, "starvation grace recovery must keep subscription alive")
+        self.assertTrue(any(batch[0].value is not None and batch[0].value.v == 77 for batch in calls),
+                        "fresh value not delivered after starvation wake")
+        starvation_nones = [
+            batch for batch in calls
+            if batch[0].status and batch[0].value is not None
+            and batch[0].value.v is None and batch[0].value.tags.get('reason') == 4010
+        ]
+        self.assertEqual(len(starvation_nones), 0, "grace recovery must not blink a stale-None")
+
+    async def test_starvation_wake_grace_expires_with_single_none(self):
+        request = make_request(tolerance=0.05)
+        crs = StarvationScriptedSolver([('starve_timeout', 1.7), CommunicationTimeoutError(message='router dead')])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[request],
+                                   delay=0.01, error_policy=NONE_POLICY, max_missed_msg=-1)
+        calls = []
+        t0 = asyncio.get_event_loop().time()
+        stamps = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+            stamps.append(asyncio.get_event_loop().time() - t0)
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 4.0
+        while len(calls) < 1 and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.2)
+        cq.stop()
+        await cq.stop_and_wait()
+        self.assertEqual(len(calls), 1, "grace expiry must produce exactly one stale-None")
+        stale = calls[0][0]
+        self.assertTrue(stale.status)
+        self.assertIsNone(stale.value.v)
+        self.assertEqual(stale.value.tags['reason'], 4010)
+        self.assertLess(stamps[0], 2.9, "stale-None should arrive within one transport window after wake")
+
+    async def test_starvation_wake_grace_does_not_stack(self):
+        request = make_request(tolerance=0.05)
+        crs = StarvationScriptedSolver([('starve_timeout', 1.7), ('starve_timeout', 1.7)])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[request],
+                                   delay=0.01, error_policy=NONE_POLICY, max_missed_msg=-1)
+        calls = []
+        cq.add_callback_async_method(lambda resp: calls.append(list(resp)) or asyncio.sleep(0))
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while len(calls) < 1 and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.3)
+        alive = not cq.is_stopped()
+        cq.stop()
+        await cq.stop_and_wait()
+        starvation_nones = [
+            batch for batch in calls
+            if batch[0].status and batch[0].value is not None
+            and batch[0].value.v is None and batch[0].value.tags.get('reason') == 4010
+        ]
+        self.assertEqual(len(starvation_nones), 1, "grace must not defer indefinitely across repeated starvation")
+        self.assertTrue(alive, "repeated starvation must not consume missed-message stop budget")
 
     async def test_real_timeout_keeps_router_reason_and_missed_stop(self):
         policy = ErrorPolicy.INTERACTIVE.with_overrides(value_policy=ValuePolicy.NONE)
