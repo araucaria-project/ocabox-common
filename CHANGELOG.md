@@ -13,7 +13,9 @@ All notable changes to this project will be documented in this file.
   loss-free for a consumer that is merely busy, not absent, and broadcast
   to any number of concurrent `get_response()` callers via a
   resolved-and-replaced delivery future rather than a shared "claimed"
-  sequence (#18)
+  sequence; each waiter shields its own await on that shared future so one
+  consumer's cancellation (a timeout, a closed widget) can no longer
+  spuriously cancel every other consumer parked on the same delivery (#18)
 
 ## [1.3.1]
 ### Fixed

@@ -219,6 +219,48 @@ class TestDeliveryRace(unittest.IsolatedAsyncioTestCase):
             except asyncio.CancelledError:
                 pass
 
+    async def test_cancelling_one_waiter_does_not_poison_others(self):
+        """Cancelling one ``get_response()`` waiter must not cancel any
+        other consumer parked on the same pending delivery.
+
+        Red on a bare shared-future implementation (no ``shield()``): a
+        cancelled ``Task`` cancels the ``Future`` it is parked on
+        (``Task.cancel()`` -> ``_fut_waiter.cancel()``); with a single
+        ``_delivery_fut`` shared by every waiter, one waiter's routine
+        cancellation (a ``wait_for`` timeout, a closed widget) would
+        spuriously cancel every other consumer waiting on the same
+        delivery — in TOI terms, one widget's teardown killing another
+        widget's callback runner.
+        """
+        crs = ScriptedSolver([CommunicationTimeoutError(message='unused')])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request()],
+                                   delay=1.0, max_missed_msg=-1)
+        cq._task = asyncio.get_event_loop().create_task(asyncio.sleep(10))
+        try:
+            task_a = asyncio.ensure_future(cq.get_response())
+            task_b = asyncio.ensure_future(cq.get_response())
+            # Let both callers park inside `_get_response_since`.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            self.assertFalse(task_a.done())
+            self.assertFalse(task_b.done())
+
+            task_a.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task_a
+
+            cq._last_response = [make_ok_response(v=7, ts=7.0)]
+            cq._notify_response()
+
+            result_b = await asyncio.wait_for(task_b, timeout=1.0)
+            self.assertEqual(result_b[0].value.v, 7)
+        finally:
+            cq._task.cancel()
+            try:
+                await cq._task
+            except asyncio.CancelledError:
+                pass
+
 
 if __name__ == '__main__':
     unittest.main()

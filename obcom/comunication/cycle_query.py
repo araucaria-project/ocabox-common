@@ -220,7 +220,17 @@ class BaseCycleQuery(ABC):
         """
         if not self.is_stopped() and not self._task.done():
             while self._delivery_seq == seen_seq:
-                await self._delivery_fut
+                # Shield: a bare Future cancellation propagates to every
+                # waiter awaiting it (Task.cancel() cancels the future the
+                # task is parked on). With one shared `_delivery_fut`, one
+                # consumer's cancellation (a wait_for timeout, a closed
+                # widget) would otherwise cancel every other consumer
+                # parked on the same delivery. `shield()` over a bare
+                # future creates no task — nothing executes and nothing
+                # can be "abandoned" — it just gives each waiter its own
+                # outer future to be cancelled through, while the shared
+                # inner future stays alive for everyone else.
+                await asyncio.shield(self._delivery_fut)
             if self._errors:
                 raise self._errors
             return self._delivered_response
