@@ -3,6 +3,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.3]
+### Fixed
+- CQ: replaced the lossy `set()`/`sleep(0)`/`clear()` event pulse with a
+  delivery sequence number, so a value change or a stale-None is no longer
+  silently dropped when the callback runner is busy inside a slow user
+  callback, or has not parked in `wait()` yet (extreme first-poll
+  starvation). `get_response()` keeps its contract; delivery is now
+  loss-free for a consumer that is merely busy, not absent, and broadcast
+  to any number of concurrent `get_response()` callers via a
+  resolved-and-replaced delivery future rather than a shared "claimed"
+  sequence; each waiter shields its own await on that shared future so one
+  consumer's cancellation (a timeout, a closed widget) can no longer
+  spuriously cancel every other consumer parked on the same delivery (#18)
+
 ## [1.3.2]
 ### Fixed
 - `ConditionalCycleQuery`: starvation wake-ups now defer stale-None synthesis

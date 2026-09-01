@@ -102,8 +102,38 @@ class BaseCycleQuery(ABC):
                  ignore_errors: bool = False, error_policy: Optional[ErrorPolicy] = None, **kwargs):
         self._query_name = query_name
         self._CRS: BaseClientRequestSolver = crs
-        self._event: asyncio.Event = asyncio.Event()
+        # Delivery sequence number: incremented exactly once per delivery
+        # (``_notify_response``). Every consumer captures its own "seen"
+        # anchor and compares it against this counter (see
+        # ``_get_response_since``) instead of racing an ``asyncio.Event``'s
+        # set/cleared edge — a consumer that is busy (running a slow
+        # callback) or not yet parked when a delivery happens still
+        # observes it the next time it checks. Because each consumer keeps
+        # its own anchor, delivery is broadcast-safe: multiple concurrent
+        # ``get_response()`` callers each see every delivery exactly once,
+        # with no shared "claim" state for one waiter to steal from another.
+        self._delivery_seq: int = 0
         self._last_response: List[ValueResponse] = []
+        # Snapshot of ``_last_response`` taken exactly when the current
+        # ``_delivery_seq`` was announced. ``_last_response`` itself keeps
+        # getting overwritten by later, non-delivering loop iterations
+        # (e.g. a timeout that resets it to ``[]`` without a fresh
+        # delivery) while a busy consumer hasn't collected the previous
+        # delivery yet — ``get_response`` must hand back what was actually
+        # announced, not whatever ``_last_response`` happens to hold by
+        # the time the busy consumer gets back to it.
+        self._delivered_response: List[ValueResponse] = []
+        # Resolved-and-replaced each delivery (see ``_notify_response``): a
+        # future is broadcast-safe by construction (every waiter awaiting
+        # it wakes on ``set_result``), unlike ``asyncio.Event.clear()``
+        # which only the next waiter to check state effectively "consumes".
+        self._delivery_fut: asyncio.Future or None = None
+        # Guards against ``stop()`` calling ``_notify_response`` twice for
+        # the same shutdown (e.g. once directly, again via
+        # ``stop_and_wait``'s call to ``stop()`` while the cancelled task
+        # has not finished unwinding yet) — a harmless double-set with the
+        # old Event, but pointless double bookkeeping with the sequence.
+        self._stop_notified: bool = False
         if delay is None or delay <= 0:
             delay = self.DEFAULT_DELAY
         self._delay: float = delay
@@ -113,6 +143,7 @@ class BaseCycleQuery(ABC):
         self._task: asyncio.Task or None = None
         self._loop = loop
         self._set_loop()  # can raise CommunicationRuntimeError
+        self._delivery_fut = self._loop.create_future()
         self._list_request: List[ValueRequest] = list_request
         self._additional_request_data = [{} for _ in range(
             len(self._list_request))]  # data to put to nex request in `request_data` dict
@@ -170,14 +201,60 @@ class BaseCycleQuery(ABC):
         :raise CommunicationRuntimeError: when cycle request loop was stopped or message can't retrieve for other reason
         :return: new response as object ValueResponse
         """
+        # Anchor "next" at the sequence value seen right now, at call time —
+        # this call must wait for a delivery that happens AFTER it, matching
+        # the documented "waits for the next response" contract. Multiple
+        # concurrent callers each capture their own anchor here, so every
+        # one of them independently observes the same delivery (broadcast),
+        # instead of racing to consume a single shared "seen" counter.
+        return await self._get_response_since(self._delivery_seq)
+
+    async def _get_response_since(self, seen_seq: int) -> List[ValueResponse]:
+        """Wait until a delivery has advanced past ``seen_seq``.
+
+        Internal helper shared by the public ``get_response()`` (anchors at
+        call time) and the callback runner (keeps its own long-lived anchor
+        across iterations, so a delivery that happened while it was busy in
+        a user callback is not lost — its anchor already lags behind
+        ``_delivery_seq`` by the time it checks again).
+        """
         if not self.is_stopped() and not self._task.done():
-            await self._event.wait()
-            await asyncio.sleep(0)  # let main task set event to false before return control to client's tasks
+            while self._delivery_seq == seen_seq:
+                # Shield: a bare Future cancellation propagates to every
+                # waiter awaiting it (Task.cancel() cancels the future the
+                # task is parked on). With one shared `_delivery_fut`, one
+                # consumer's cancellation (a wait_for timeout, a closed
+                # widget) would otherwise cancel every other consumer
+                # parked on the same delivery. `shield()` over a bare
+                # future creates no task — nothing executes and nothing
+                # can be "abandoned" — it just gives each waiter its own
+                # outer future to be cancelled through, while the shared
+                # inner future stays alive for everyone else.
+                await asyncio.shield(self._delivery_fut)
             if self._errors:
                 raise self._errors
-            return self._last_response
+            return self._delivered_response
         raise CommunicationRuntimeError(message=f"{self}: Query was stopped. before waiting for a reply "
                                                 f"you have to run them first")
+
+    def _notify_response(self):
+        """Advance the delivery sequence and wake every ``get_response`` waiter.
+
+        Every place that used to call ``self._event.set()`` to announce a
+        new (or final) response must call this instead. Resolves the
+        current ``_delivery_fut`` and replaces it with a fresh one: a
+        resolved future wakes every task awaiting it (broadcast-safe by
+        construction), so no waiter can "steal" another waiter's wake-up
+        the way one shared ``clear()`` could. Snapshots ``_last_response``
+        at this exact moment into ``_delivered_response`` so a busy
+        consumer that collects it later gets what was actually announced,
+        immune to later non-delivering mutations of ``_last_response``.
+        """
+        self._delivery_seq += 1
+        self._delivered_response = list(self._last_response)
+        fut, self._delivery_fut = self._delivery_fut, self._loop.create_future()
+        if not fut.done():
+            fut.set_result(None)
 
     @abstractmethod
     async def _send_message(self):
@@ -189,7 +266,10 @@ class BaseCycleQuery(ABC):
 
     def _run(self):
         self._task = self._loop.create_task(self._send_message())
-        self._event.clear()
+        self._delivery_seq = 0
+        self._delivered_response = []
+        self._delivery_fut = self._loop.create_future()
+        self._stop_notified = False
 
     def _set_loop(self):
         """
@@ -217,7 +297,9 @@ class BaseCycleQuery(ABC):
         """Method stop cycle query."""
         if not self.is_stopped() and not self._task.done():
             self._task.cancel()
-            self._event.set()
+            if not self._stop_notified:
+                self._stop_notified = True
+                self._notify_response()
         if self._callback_task and self._callback_task in asyncio.all_tasks(
                 self._loop) and not self._callback_task.done():
             self._callback_task.cancel()
@@ -270,11 +352,20 @@ class BaseCycleQuery(ABC):
     async def _execute_callbacks(self):
         """Main loop for callback runner task"""
         run = True
+        # Local anchor, initialized to 0 (not lazily captured on first use):
+        # this must see a delivery that already happened before this task's
+        # first turn (first-poll starvation) as well as one that happened
+        # while this loop was busy awaiting a user callback below — in both
+        # cases ``self._delivery_seq`` has already moved past this anchor by
+        # the time we check, so ``_get_response_since`` returns immediately
+        # instead of the delivery being lost.
+        seen_seq = 0
         while run:
             # it is not necessary to check main task is still running because it is realized in 'get_response'
             await asyncio.sleep(0)
             try:
-                result = await self.get_response()
+                result = await self._get_response_since(seen_seq)
+                seen_seq = self._delivery_seq
             except CommunicationRuntimeError:
                 run = False
                 result = self._last_response
@@ -378,11 +469,11 @@ class PeriodicCycleQuery(BaseCycleQuery):
 
                 self._last_response = result
                 missed = 0
-                self._event.set()
+                self._notify_response()
             except CommunicationRuntimeError as e:
                 self._errors = e
                 self._last_response = []
-                self._event.set()
+                self._notify_response()
                 break
             except CommunicationTimeoutError:
                 missed += 1
@@ -390,7 +481,7 @@ class PeriodicCycleQuery(BaseCycleQuery):
                 logger.warning(f'{self}: The waiting time for the message: has expired. The router is not '
                                f'responding. Number of missing answers: {missed}')
                 if self._log_missed_msg:
-                    self._event.set()
+                    self._notify_response()
 
             except Exception as e:
                 self._last_response = []
@@ -403,16 +494,15 @@ class PeriodicCycleQuery(BaseCycleQuery):
                     await asyncio.sleep(_CATCH_ALL_RETRY_DELAY)
                     continue
                 self._errors = CommunicationRuntimeError(message='Unrecognized error')
-                self._event.set()
+                self._notify_response()
                 break
 
             if missed > self._max_missed_msg >= 0:
                 logger.error(f"{self}: Too many missed messages at same time")
                 self._errors = CommunicationRuntimeError(message='Too many missed messages at same time')
-                self._event.set()
+                self._notify_response()
                 break
             await asyncio.sleep(0)
-            self._event.clear()
 
 
 class ConditionalCycleQuery(BaseCycleQuery):
@@ -730,13 +820,11 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         pass
                     else:
                         # Fire callback with the error response, then keep
-                        # retrying. Clear BEFORE the backoff: waiters woken at
-                        # set() keep their wake-up, but an event left set
-                        # through a long backoff would re-deliver the same
-                        # error in a tight loop.
-                        self._event.set()
+                        # retrying. The delivery sequence (not a clear/set
+                        # pulse) is what keeps this from re-delivering the
+                        # same error in a tight loop across iterations.
+                        self._notify_response()
                         await asyncio.sleep(0)
-                        self._event.clear()
                     await self._backoff_sleep(retry_delay, last_error_code)
                     continue
                 if continue_while:
@@ -754,12 +842,12 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     await self._backoff_sleep(retry_delay, last_error_code)
                     await asyncio.sleep(0)
                     continue
-                self._event.set()
+                self._notify_response()
             except CommunicationRuntimeError as e:
                 self._errors = e
                 if not not_clear_result:
                     self._last_response = []
-                self._event.set()
+                self._notify_response()
                 break
             except CommunicationTimeoutError:
                 is_starvation, wake_lag, lag_threshold = self._detect_local_starvation(poll_started)
@@ -828,7 +916,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     await self._backoff_sleep(_CATCH_ALL_RETRY_DELAY, type(e).__name__)
                     continue
                 self._errors = CommunicationRuntimeError(message='Unrecognized error')
-                self._event.set()
+                self._notify_response()
                 break
             if (missed >= self._max_missed_msg >= 0
                     and self._error_policy.normal.action == SeverityAction.STOP):
@@ -840,10 +928,9 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 # truth axis meanwhile keeps the consumer honest via T2.
                 logger.error(f"{self}: Too many missed messages at same time")
                 self._errors = CommunicationRuntimeError(message='Too many missed messages at same time')
-                self._event.set()
+                self._notify_response()
                 break
             await asyncio.sleep(0)
-            self._event.clear()
 
     @property
     def _stale_opt_in(self) -> bool:
@@ -901,10 +988,16 @@ class ConditionalCycleQuery(BaseCycleQuery):
         return True
 
     async def _pulse_event(self):
-        """Wake ``get_response`` waiters exactly once with the current response."""
-        self._event.set()
+        """Wake ``get_response`` waiters with the current response.
+
+        Despite the name (kept for call-site continuity), this no longer
+        pulses the event edge-triggered: it advances the delivery sequence
+        (see ``_notify_response``) so a consumer that is busy or not yet
+        parked in ``wait()`` still observes this delivery afterwards,
+        instead of the batch being lost to a clear() that races it.
+        """
+        self._notify_response()
         await asyncio.sleep(0)
-        self._event.clear()
 
     def _hold_stale_view(self) -> bool:
         """Keep the active episode's None batch as the delivered truth.
