@@ -600,13 +600,34 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # value *change*: a value stable for days, confirmed by renewals,
         # is perfectly truthful. Error batches and router silence do not
         # touch this clock. Monotonic: immune to NTP/manual clock jumps
-        # (wall clock is used only for the emitted Value.ts).
+        # (wall clock is used only for the emitted Value.ts). Exposed
+        # publicly via ``last_healthy_contact_age``/``is_contact_fresh`` —
+        # consumers building their own liveness watchdogs MUST use those
+        # instead of timing deliveries.
         self._last_contact_ts: float = time.monotonic()
         # Router-silence warnings are throttled for opted-in subscriptions
         # (the tolerance clock, not the operator, owns the outage there).
         self._timeout_log_state: _LogPolicyState = self._error_policy.normal.log.make_state()
         self._starvation_episode_active: bool = False
         self._starvation_grace_until: Optional[float] = None
+
+    @property
+    def last_healthy_contact_age(self) -> float:
+        """Seconds (monotonic) since the last healthy contact with the source.
+
+        Healthy contact = a delivered value batch or a CREDIBLE 4004 long-poll
+        renewal (server alive, value unchanged-and-fresh). Errors, router
+        silence and instant renewals do not count. This is the same clock the
+        T2 staleness verdict runs on — consumers building their own liveness
+        watchdogs MUST use this instead of timing deliveries (conditional
+        deliveries are once-per-change: a stationary value is silent while
+        perfectly healthy).
+        """
+        return time.monotonic() - self._last_contact_ts
+
+    def is_contact_fresh(self, max_age: float) -> bool:
+        """True when the source was known healthy within ``max_age`` seconds."""
+        return self.last_healthy_contact_age <= max_age
 
     def _detect_local_starvation(self, poll_started: Optional[float]):
         """Classify a timeout wake-up as local event-loop starvation.
