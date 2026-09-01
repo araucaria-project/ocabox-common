@@ -10,7 +10,10 @@ All notable changes to this project will be documented in this file.
   silently dropped when the callback runner is busy inside a slow user
   callback, or has not parked in `wait()` yet (extreme first-poll
   starvation). `get_response()` keeps its contract; delivery is now
-  loss-free for a consumer that is merely busy, not absent (#18)
+  loss-free for a consumer that is merely busy, not absent, and broadcast
+  to any number of concurrent `get_response()` callers via a
+  resolved-and-replaced delivery future rather than a shared "claimed"
+  sequence (#18)
 
 ## [1.3.1]
 ### Fixed

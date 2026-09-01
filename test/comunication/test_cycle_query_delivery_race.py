@@ -169,6 +169,56 @@ class TestDeliveryRace(unittest.IsolatedAsyncioTestCase):
         # No duplicate delivery for the same episode.
         self.assertEqual(final_seq, 1)
 
+    async def test_broadcast_delivery_to_concurrent_waiters(self):
+        """Two concurrent ``get_response()`` callers must both receive the
+        same delivery (broadcast), and a caller that starts afterward must
+        park for the NEXT delivery rather than re-receiving this one.
+
+        Red on a shared-``_delivered_seq`` "claim" implementation: the first
+        waiter to wake advances the single shared claim, so the second
+        waiter's re-check sees "already caught up" and parks forever on
+        that delivery — silently starved even though it was already parked
+        when the delivery happened.
+        """
+        crs = ScriptedSolver([CommunicationTimeoutError(message='unused')])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request()],
+                                   delay=1.0, max_missed_msg=-1)
+        # `get_response()` only requires `not is_stopped() and not
+        # self._task.done()` — keep the query "running" with a dummy task,
+        # without spinning up the real producer loop.
+        cq._task = asyncio.get_event_loop().create_task(asyncio.sleep(10))
+        task3 = None
+        try:
+            task1 = asyncio.ensure_future(cq.get_response())
+            task2 = asyncio.ensure_future(cq.get_response())
+            # Let both callers park inside `_get_response_since`.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            self.assertFalse(task1.done())
+            self.assertFalse(task2.done())
+
+            cq._last_response = [make_ok_response(v=99, ts=9.0)]
+            cq._notify_response()
+
+            result1 = await asyncio.wait_for(task1, timeout=1.0)
+            result2 = await asyncio.wait_for(task2, timeout=1.0)
+            self.assertEqual(result1[0].value.v, 99)
+            self.assertEqual(result2[0].value.v, 99)
+
+            # No duplicate delivery: a caller starting after the fact must
+            # wait for the NEXT delivery, not re-receive this one.
+            task3 = asyncio.ensure_future(cq.get_response())
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(task3, timeout=0.2)
+        finally:
+            if task3 is not None and not task3.done():
+                task3.cancel()
+            cq._task.cancel()
+            try:
+                await cq._task
+            except asyncio.CancelledError:
+                pass
+
 
 if __name__ == '__main__':
     unittest.main()
