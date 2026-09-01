@@ -3,7 +3,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [1.3.2]
+## [1.3.3]
 ### Fixed
 - CQ: replaced the lossy `set()`/`sleep(0)`/`clear()` event pulse with a
   delivery sequence number, so a value change or a stale-None is no longer
@@ -16,8 +16,12 @@ All notable changes to this project will be documented in this file.
   sequence; each waiter shields its own await on that shared future so one
   consumer's cancellation (a timeout, a closed widget) can no longer
   spuriously cancel every other consumer parked on the same delivery (#18)
+- `ConditionalCycleQuery`: starvation wake-ups now defer stale-None synthesis
+  by one transport window and use the next poll as evidence, avoiding red-blink
+  flapping under GUI/event-loop stalls while preserving punctual stale delivery
+  when silence persists (`reason=4010`).
 
-## [1.3.1]
+## [1.3.2]
 ### Fixed
 - CQ: 4004 renewals feed the T2 contact clock only when they arrive after a
   real long-poll wait; an instant-renewal livelock now delivers the punctual
