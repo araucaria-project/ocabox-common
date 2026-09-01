@@ -3,6 +3,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.2]
+### Fixed
+- CQ: replaced the lossy `set()`/`sleep(0)`/`clear()` event pulse with a
+  delivery sequence number, so a value change or a stale-None is no longer
+  silently dropped when the callback runner is busy inside a slow user
+  callback, or has not parked in `wait()` yet (extreme first-poll
+  starvation). `get_response()` keeps its contract; delivery is now
+  loss-free for a consumer that is merely busy, not absent (#18)
+
 ## [1.3.1]
 ### Fixed
 - CQ: 4004 renewals feed the T2 contact clock only when they arrive after a
