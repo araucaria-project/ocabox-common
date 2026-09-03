@@ -3,6 +3,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.0]
+### Changed
+- Default truth bound (T2) is `ValueRequest.default_max_age(t1) = max(2*T1,
+  DEFAULT_MAX_AGE_FLOOR=5 s)`, computed in one place; `ValueRequest.
+  effective_max_age` gives the bound in force. An explicit T2 is unchanged
+- CQ: a timeout wake-up caused by local event-loop starvation no longer
+  produces any verdict (the grace timer and reason code 4010 are gone) —
+  the query polls again immediately and the outcome of that poll decides
+
 ## [1.3.4]
 ### Added
 - `ConditionalCycleQuery`: exposed the T2 health clock publicly via

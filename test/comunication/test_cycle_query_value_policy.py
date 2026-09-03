@@ -4,7 +4,7 @@ Phase 1 (ocabox-common#9 of epic ocabox-common#8): a declared
 ``ValuePolicy`` is serialized into cyclic-query ``request_data`` and, for
 ``NONE``, the client library synthesizes a rich ``Value(None)`` once
 silence (router timeouts, retried server errors) outlives the
-subscription's T2 (``time_of_data_max_age``, default ``2 * T1``).
+subscription's T2 (``time_of_data_max_age``, default ``ValueRequest.default_max_age(T1)``).
 Undeclared policies must be
 bit-for-bit inert — that is the deployment-safety property that lets
 1.3.0 ship before ocabox-server 2.5.2 reaches production.
@@ -30,6 +30,21 @@ from obcom.data_colection.address import Address
 from obcom.data_colection.response_error import ResponseError
 from obcom.data_colection.value import Value
 from obcom.data_colection.value_call import ValueRequest, ValueResponse
+
+
+# These tests exercise the truth axis with sub-second tolerances; the
+# production floor of the default T2 would stretch every scenario to seconds.
+_FLOOR = None
+
+
+def setUpModule():
+    global _FLOOR
+    _FLOOR = ValueRequest.DEFAULT_MAX_AGE_FLOOR
+    ValueRequest.DEFAULT_MAX_AGE_FLOOR = 0.0
+
+
+def tearDownModule():
+    ValueRequest.DEFAULT_MAX_AGE_FLOOR = _FLOOR
 
 
 def make_ok_response(addr: str = 'test.subject', v=42, ts: float = 0.0) -> ValueResponse:
@@ -141,10 +156,39 @@ class TestValuePolicyWire(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('value_policy', r.request_data)
 
 
+class TestDefaultMaxAge(unittest.TestCase):
+    """The single rule deriving a default truth bound from a tolerance:
+    ``max(2*T1, DEFAULT_MAX_AGE_FLOOR)``. An explicit T2 is never floored."""
+
+    def setUp(self):
+        self._patched = ValueRequest.DEFAULT_MAX_AGE_FLOOR
+        ValueRequest.DEFAULT_MAX_AGE_FLOOR = _FLOOR  # the production value
+
+    def tearDown(self):
+        ValueRequest.DEFAULT_MAX_AGE_FLOOR = self._patched
+
+    def test_floor_is_five_seconds(self):
+        self.assertEqual(ValueRequest.DEFAULT_MAX_AGE_FLOOR, 5.0)
+
+    def test_short_tolerance_gets_the_floor(self):
+        self.assertEqual(ValueRequest.default_max_age(0.5), 5.0)
+        self.assertEqual(ValueRequest.default_max_age(0.25), 5.0)
+
+    def test_long_tolerance_keeps_one_missed_cycle(self):
+        self.assertEqual(ValueRequest.default_max_age(60.0), 120.0)
+
+    def test_effective_max_age_prefers_the_declared_bound(self):
+        declared = ValueRequest(address=Address('test.subject'), time_of_data_tolerance=0.5,
+                                time_of_data_max_age=1.0)
+        self.assertEqual(declared.effective_max_age, 1.0)
+        undeclared = ValueRequest(address=Address('test.subject'), time_of_data_tolerance=0.5)
+        self.assertEqual(undeclared.effective_max_age, 5.0)
+
+
 class TestMaxAgeWire(unittest.IsolatedAsyncioTestCase):
     """T2 (`time_of_data_max_age`) rides as a first-class ValueRequest field."""
 
-    async def test_declared_policy_defaults_max_age_to_twice_tolerance(self):
+    async def test_declared_policy_defaults_max_age_by_the_shared_rule(self):
         crs = ScriptedSolver([[make_ok_response()]])
         cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.5)],
                                    delay=0.01, error_policy=NONE_POLICY)
@@ -152,7 +196,8 @@ class TestMaxAgeWire(unittest.IsolatedAsyncioTestCase):
         cq.add_callback_async_method(lambda r: calls.append(r) or asyncio.sleep(0))
         await _drive(cq, calls, target=1)
         await cq.stop_and_wait()
-        self.assertEqual(crs.seen_requests[0][0].time_of_data_max_age, 1.0)
+        self.assertEqual(crs.seen_requests[0][0].time_of_data_max_age,
+                         ValueRequest.default_max_age(0.5))
 
     async def test_explicit_max_age_is_kept_and_clamped_to_tolerance(self):
         r = ValueRequest(address=Address('test.subject'), time_of_data_tolerance=1.0,
@@ -743,7 +788,9 @@ class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('last_good', stale.value.tags)
         self.assertNotIn('last_good_ts', stale.value.tags)
 
-    async def test_starvation_timeout_uses_dedicated_reason_and_does_not_stop(self):
+    async def test_starved_wake_never_verdicts_and_does_not_stop(self):
+        """A wake-up delayed by our own loop is no evidence about the source:
+        no None, no missed-message charge — the next poll decides."""
         policy = ErrorPolicy.INTERACTIVE.with_overrides(value_policy=ValuePolicy.NONE)
         crs = ScriptedSolver([CommunicationTimeoutError(message='starved loop')])
         cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
@@ -757,19 +804,14 @@ class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
         cq.add_callback_async_method(on_msg)
         with patch.object(cq, '_detect_local_starvation', return_value=(True, 0.8, 0.5)):
             cq.start()
-            deadline = asyncio.get_event_loop().time() + 1.5
-            while len(calls) < 1 and asyncio.get_event_loop().time() < deadline:
-                await asyncio.sleep(0.01)
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.3)
             alive = not cq.is_stopped()
             cq.stop()
         await cq.stop_and_wait()
-        self.assertTrue(alive, "starvation episodes must not consume missed-message budget")
-        self.assertGreaterEqual(len(calls), 1)
-        self.assertIsNone(calls[0][0].value.v)
-        self.assertEqual(calls[0][0].value.tags['reason'], 4010)
+        self.assertTrue(alive)
+        self.assertEqual(calls, [])
 
-    async def test_starvation_wake_grace_recovers_without_stale_none(self):
+    async def test_starved_wake_then_value_delivers_value_only(self):
         crs = StarvationScriptedSolver([('starve_timeout', 1.7), [make_ok_response(v=77)]])
         cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
                                    delay=0.01, error_policy=NONE_POLICY, max_missed_msg=-1)
@@ -781,24 +823,18 @@ class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
         cq.add_callback_async_method(on_msg)
         cq.start()
         deadline = asyncio.get_event_loop().time() + 3.0
-        while (not calls or calls[-1][0].value is None or calls[-1][0].value.v is None) \
-                and asyncio.get_event_loop().time() < deadline:
+        while not calls and asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.01)
         await asyncio.sleep(0.3)
         alive = not cq.is_stopped()
         cq.stop()
         await cq.stop_and_wait()
-        self.assertTrue(alive, "starvation grace recovery must keep subscription alive")
-        self.assertTrue(any(batch[0].value is not None and batch[0].value.v == 77 for batch in calls),
-                        "fresh value not delivered after starvation wake")
-        starvation_nones = [
-            batch for batch in calls
-            if batch[0].status and batch[0].value is not None
-            and batch[0].value.v is None and batch[0].value.tags.get('reason') == 4010
-        ]
-        self.assertEqual(len(starvation_nones), 0, "grace recovery must not blink a stale-None")
+        self.assertTrue(alive)
+        self.assertTrue(calls and calls[0][0].value.v == 77,
+                        "the evidential poll's value must be the first and only delivery")
+        self.assertFalse(any(b[0].value is not None and b[0].value.v is None for b in calls))
 
-    async def test_starvation_wake_grace_expires_with_single_none(self):
+    async def test_starved_wake_then_silence_verdicts_from_the_evidential_poll(self):
         request = make_request(tolerance=0.05)
         crs = StarvationScriptedSolver([('starve_timeout', 1.7), ('slow_timeout', 1.05)])
         cq = ConditionalCycleQuery(crs=crs, list_request=[request],
@@ -819,50 +855,31 @@ class TestStaleSynthesis(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.2)
         cq.stop()
         await cq.stop_and_wait()
-        self.assertEqual(len(calls), 1, "grace expiry must produce exactly one stale-None")
+        self.assertEqual(len(calls), 1, "exactly one stale-None per silence episode")
         stale = calls[0][0]
         self.assertTrue(stale.status)
         self.assertIsNone(stale.value.v)
         self.assertEqual(stale.value.tags['reason'], 4002)
-        self.assertGreater(stamps[0], 2.3, "stale-None must be deferred by one evidential poll window")
-        self.assertLess(stamps[0], 2.9, "stale-None should arrive within one transport window after wake")
+        self.assertGreater(stamps[0], 2.3, "the verdict comes from the poll after the wake, not the wake")
+        self.assertLess(stamps[0], 2.9)
 
-    async def test_starvation_wake_grace_does_not_stack(self):
-        request = make_request(tolerance=0.05)
-        crs = StarvationScriptedSolver([('starve_timeout', 1.7), ('starve_timeout', 1.7)])
-        cq = ConditionalCycleQuery(crs=crs, list_request=[request],
+    async def test_repeated_starvation_never_verdicts(self):
+        crs = StarvationScriptedSolver([('starve_timeout', 1.7)])
+        cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
                                    delay=0.01, error_policy=NONE_POLICY, max_missed_msg=-1)
         calls = []
-        t0 = asyncio.get_event_loop().time()
-        stamps = []
 
         async def on_msg(resp):
             calls.append(list(resp))
-            stamps.append(asyncio.get_event_loop().time() - t0)
 
         cq.add_callback_async_method(on_msg)
         cq.start()
-        deadline = asyncio.get_event_loop().time() + 5.0
-        while len(calls) < 1 and asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(0.01)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(3.8)
         alive = not cq.is_stopped()
         cq.stop()
         await cq.stop_and_wait()
-        starvation_nones = [
-            batch for batch in calls
-            if batch[0].status and batch[0].value is not None
-            and batch[0].value.v is None and batch[0].value.tags.get('reason') == 4010
-        ]
-        self.assertEqual(len(starvation_nones), 1, "grace must not defer indefinitely across repeated starvation")
-        first_starvation_none_idx = next(
-            i for i, batch in enumerate(calls)
-            if batch[0].status and batch[0].value is not None
-            and batch[0].value.v is None and batch[0].value.tags.get('reason') == 4010
-        )
-        self.assertGreater(stamps[first_starvation_none_idx], 2.5,
-                           "repeated starvation must not synthesize on the first wake")
-        self.assertTrue(alive, "repeated starvation must not consume missed-message stop budget")
+        self.assertEqual(calls, [])
+        self.assertTrue(alive)
 
     async def test_real_timeout_keeps_router_reason_and_missed_stop(self):
         policy = ErrorPolicy.INTERACTIVE.with_overrides(value_policy=ValuePolicy.NONE)

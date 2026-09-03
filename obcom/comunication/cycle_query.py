@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__.rsplit('.')[-1])
 # constant so tests can patch it to 0 without touching asyncio.sleep.
 _CATCH_ALL_RETRY_DELAY = 60.0
 _ROUTER_TIMEOUT_REASON = 4002
-_EVENT_LOOP_STARVED_REASON = 4010
 
 
 class _SeverityRetryState:
@@ -552,11 +551,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
         if self._error_policy.value_policy is not None:
             for r in self._list_request:
                 r.request_data['value_policy'] = self._error_policy.value_policy.value
-                # T2 default: one full missed refresh cycle beyond the declared
-                # freshness (T1) — "fajne defaulty": nobody has to think about
-                # it and a healthy system's cadence stays governed by T1.
                 if r.time_of_data_max_age is None:
-                    r.time_of_data_max_age = 2 * r.time_of_data_tolerance
+                    r.time_of_data_max_age = ValueRequest.default_max_age(r.time_of_data_tolerance)
         if self._stale_opt_in:
             # The long-poll window must not exceed the truth bound: while a
             # request is in flight the client is blind, so a dead router would
@@ -564,14 +560,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
             # bounds that detection latency; on a healthy connection the 4004
             # renewals then arrive within T2 and keep the contact clock alive
             # (no false staleness, old or new server). Floor of 1s so a very
-            # tight T2 does not turn into a renewal storm.
-            tightest_t2 = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
-                              for r in self._list_request)
-            if tightest_t2 < 1.0:
-                logger.warning(f"{self}: time_of_data_max_age {tightest_t2}s is below the long-poll "
-                               f"transport resolution — transport-death detection is floored at ~1s "
-                               f"(a healthy server still enforces the exact bound server-side)")
-            window = max(1.0, tightest_t2)
+            # tight explicit T2 does not turn into a renewal storm.
+            window = max(1.0, self._tightest_t2())
             if window < self._timeout:
                 self._timeout = window
                 for r in self._list_request:
@@ -609,7 +599,6 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # (the tolerance clock, not the operator, owns the outage there).
         self._timeout_log_state: _LogPolicyState = self._error_policy.normal.log.make_state()
         self._starvation_episode_active: bool = False
-        self._starvation_grace_until: Optional[float] = None
 
     @property
     def last_healthy_contact_age(self) -> float:
@@ -848,11 +837,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 # so the next failure starts the loud-warning streak fresh.
                 if successful_response and self._severity_state:
                     self._severity_state.clear()
-                if saw_value or saw_server_none or saw_credible_renewal:
-                    self._starvation_grace_until = None
                 if notify_then_continue:
-                    if self._starvation_grace_until is not None:
-                        self._starvation_grace_until = None
                     # Past T2 the rich stale-None (which carries this error's
                     # code as `reason`) SUPERSEDES the raw error notify: one
                     # coherent delivery instead of two racing writes to
@@ -876,8 +861,6 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     await self._backoff_sleep(retry_delay, last_error_code)
                     continue
                 if continue_while:
-                    if self._starvation_grace_until is not None:
-                        self._starvation_grace_until = None
                     # While the transport axis silently retries, the truth
                     # axis watches the T2 clock: masking an error is allowed
                     # only as long as the last value is still fresh enough
@@ -900,23 +883,17 @@ class ConditionalCycleQuery(BaseCycleQuery):
             except CommunicationTimeoutError:
                 is_starvation, wake_lag, lag_threshold = self._detect_local_starvation(poll_started)
                 if is_starvation:
+                    # Our own loop was frozen: that says nothing about the
+                    # source, so no verdict is made here — poll again and let
+                    # the outcome decide (a value or credible renewal keeps
+                    # the view truthful, a real silence is judged as such).
                     self._last_response = []
                     if not self._starvation_episode_active:
                         logger.warning(
                             f'{self}: event loop starved for {wake_lag:.3f}s '
                             f'(threshold {lag_threshold:.3f}s, {len(self._list_request)} subscriptions affected)')
                         self._starvation_episode_active = True
-                    now_mono = time.monotonic()
-                    if self._starvation_grace_until is None:
-                        self._starvation_grace_until = now_mono + self._timeout
-                        self._hold_stale_view()
-                    elif now_mono >= self._starvation_grace_until:
-                        if self._maybe_synthesize_stale(reason=_EVENT_LOOP_STARVED_REASON):
-                            await self._pulse_event()
-                        else:
-                            self._hold_stale_view()
-                    else:
-                        self._hold_stale_view()
+                    self._hold_stale_view()
                     await asyncio.sleep(0)
                     continue
                 self._starvation_episode_active = False
@@ -933,8 +910,6 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 # Router silence: the lowest layer that still has data is
                 # this one, so stale-synthesis happens here (4002 =
                 # "Application do not answer").
-                if self._starvation_grace_until is not None:
-                    self._starvation_grace_until = None
                 if self._maybe_synthesize_stale(reason=_ROUTER_TIMEOUT_REASON):
                     await self._pulse_event()
                 else:
@@ -980,6 +955,10 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 break
             await asyncio.sleep(0)
 
+    def _tightest_t2(self) -> float:
+        """Whole-batch truth bound: the tightest T2 in force across the batch."""
+        return min(r.effective_max_age for r in self._list_request)
+
     @property
     def _stale_opt_in(self) -> bool:
         """True when this subscription declared ``ValuePolicy.NONE``.
@@ -1006,9 +985,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # Whole-batch synthesis triggers at the TIGHTEST bound: a late None
         # violates that member's truth bound, an early None for a looser
         # member is merely conservative (masking is permitted, not mandated).
-        tightest_t2 = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
-                          for r in self._list_request)
-        if silence <= tightest_t2:
+        if silence <= self._tightest_t2():
             return False  # still truthful (within the tightest T2) — keep masking
         batch = []
         for i, r in enumerate(self._list_request):
@@ -1025,7 +1002,6 @@ class ConditionalCycleQuery(BaseCycleQuery):
         self._last_response = batch
         self._stale_delivered = True
         self._stale_view = batch
-        self._starvation_grace_until = None
         # Drop the change bookkeeping: the server never witnessed this None,
         # so on the next successful contact it must redeliver the current
         # value unconditionally (it may be fresh even though we lost touch).
@@ -1068,9 +1044,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
         if not self._stale_opt_in or self._stale_delivered:
             return None
         silence = time.monotonic() - self._last_contact_ts
-        tightest = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
-                       for r in self._list_request)
-        return tightest - silence
+        return self._tightest_t2() - silence
 
     async def _backoff_sleep(self, retry_delay: float, reason) -> None:
         """Sleep the retry backoff, waking at the T2 deadline if it falls
