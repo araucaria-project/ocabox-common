@@ -114,7 +114,7 @@ class ValueRequest(ValueExchange):
     # data younger than T1 is preferred, (T1, T2] is still an acceptable answer
     # while a refresh is being fought for, older than T2 must not be presented —
     # the Staleness Contract bound. None = undeclared (pre-contract behaviour;
-    # cycle queries with a declared value_policy default it to 2*T1). A plain
+    # cycle queries with a declared value_policy default it via default_max_age). A plain
     # dataclass field, NOT request_data: old servers drop it in from_dict, so
     # it can never leak to connectors (safe against the 2.3.12 bug class).
     # Declared LAST so pre-1.3.0 positional constructor calls keep working.

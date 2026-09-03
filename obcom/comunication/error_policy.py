@@ -57,8 +57,8 @@ class ValuePolicy(str, Enum):
 
     Decides what the client receives once the last known value no longer
     satisfies its own ``time_of_data_max_age`` (T2 — the truth bound, default
-    ``2 * time_of_data_tolerance``; T1, the tolerance itself, only governs the
-    refresh cadence):
+    ``ValueRequest.default_max_age(T1)``; T1, the tolerance itself, only governs
+    the refresh cadence):
 
     * ``RAISE``     — the underlying error surfaces (per severity actions).
     * ``NONE``      — a rich ``Value(None, ts=now, tags={reason, last_good,
@@ -372,7 +372,7 @@ ErrorPolicy.FAIL_FAST = ErrorPolicy(
 # Unattended displays — TOI screens, oca_monitor walls. Like SERVICE it
 # nurses itself through outages, but it also declares the truth axis:
 # once the shown value is older than T2 (``time_of_data_max_age``, default
-# ``2 * time_of_data_tolerance``) the widget receives a rich ``Value(None)``
+# ``ValueRequest.default_max_age(T1)``) the widget receives a rich ``Value(None)``
 # (and can grey out / render last_good from tags) instead of silently
 # displaying stale numbers. CRITICAL uses NOTIFY
 # rather than STOP: a wall display must show the error *and* keep healing

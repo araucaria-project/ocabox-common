@@ -109,7 +109,8 @@ class BaseClientAPI(ABC):
         :param max_data_age: T2 of the temporal model — data older than this is
             no longer an acceptable answer (Staleness Contract bound). Only
             meaningful with a declared ``error_policy.value_policy``; defaults
-            to ``2 * time_of_data_tolerance``.
+            by ``ValueRequest.default_max_age`` (``2 * time_of_data_tolerance``,
+            floored at ``ValueRequest.DEFAULT_MAX_AGE_FLOOR``).
         :return: object `ConditionalCycleQuery`
         """
         if time_of_data_tolerance is None and delay:
@@ -152,7 +153,8 @@ class BaseClientAPI(ABC):
         :param max_data_age: T2 of the temporal model — data older than this is
             no longer an acceptable answer (Staleness Contract bound). Only
             meaningful with a declared ``error_policy.value_policy``; defaults
-            to ``2 * time_of_data_tolerance``.
+            by ``ValueRequest.default_max_age`` (``2 * time_of_data_tolerance``,
+            floored at ``ValueRequest.DEFAULT_MAX_AGE_FLOOR``).
         :return:
         """
         cq = await self.subscribe(address=address, time_of_data_tolerance=time_of_data_tolerance, delay=delay,

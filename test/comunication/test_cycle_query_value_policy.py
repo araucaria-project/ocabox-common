@@ -4,7 +4,7 @@ Phase 1 (ocabox-common#9 of epic ocabox-common#8): a declared
 ``ValuePolicy`` is serialized into cyclic-query ``request_data`` and, for
 ``NONE``, the client library synthesizes a rich ``Value(None)`` once
 silence (router timeouts, retried server errors) outlives the
-subscription's T2 (``time_of_data_max_age``, default ``2 * T1``).
+subscription's T2 (``time_of_data_max_age``, default ``ValueRequest.default_max_age(T1)``).
 Undeclared policies must be
 bit-for-bit inert — that is the deployment-safety property that lets
 1.3.0 ship before ocabox-server 2.5.2 reaches production.
