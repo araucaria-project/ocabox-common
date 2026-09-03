@@ -146,7 +146,7 @@ class TestDeliveryRace(unittest.IsolatedAsyncioTestCase):
         ``_last_response`` forever, and the callback is never invoked.
         """
         policy = ErrorPolicy.INTERACTIVE.with_overrides(value_policy=ValuePolicy.NONE)
-        crs = ScriptedSolver([CommunicationTimeoutError(message='starved loop')])
+        crs = ScriptedSolver([CommunicationTimeoutError(message='router silent')])
         cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.05)],
                                    delay=0.01, error_policy=policy, max_missed_msg=-1)
         cq._last_contact_ts = cq._last_contact_ts - 2.0
@@ -159,7 +159,7 @@ class TestDeliveryRace(unittest.IsolatedAsyncioTestCase):
 
         # Start ONLY the producer task (`_run`), not the callback runner
         # (`_run_callbacks`) — mirrors `start()` without its second half.
-        with patch.object(cq, '_detect_local_starvation', return_value=(True, 0.8, 0.5)):
+        with patch.object(cq, '_detect_local_starvation', return_value=(False, 0.0, 0.5)):
             cq._run()
             try:
                 deadline = asyncio.get_event_loop().time() + 2.0
@@ -180,7 +180,7 @@ class TestDeliveryRace(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(calls), 1, "the stale-None must be delivered exactly once, not lost")
         self.assertIsNone(calls[0][0].value.v)
-        self.assertEqual(calls[0][0].value.tags['reason'], 4010)
+        self.assertEqual(calls[0][0].value.tags['reason'], 4002)
         # No duplicate delivery for the same episode.
         self.assertEqual(final_seq, 1)
 

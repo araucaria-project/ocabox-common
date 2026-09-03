@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__.rsplit('.')[-1])
 # constant so tests can patch it to 0 without touching asyncio.sleep.
 _CATCH_ALL_RETRY_DELAY = 60.0
 _ROUTER_TIMEOUT_REASON = 4002
-_EVENT_LOOP_STARVED_REASON = 4010
 
 
 class _SeverityRetryState:
@@ -600,7 +599,6 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # (the tolerance clock, not the operator, owns the outage there).
         self._timeout_log_state: _LogPolicyState = self._error_policy.normal.log.make_state()
         self._starvation_episode_active: bool = False
-        self._starvation_grace_until: Optional[float] = None
 
     @property
     def last_healthy_contact_age(self) -> float:
@@ -839,11 +837,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 # so the next failure starts the loud-warning streak fresh.
                 if successful_response and self._severity_state:
                     self._severity_state.clear()
-                if saw_value or saw_server_none or saw_credible_renewal:
-                    self._starvation_grace_until = None
                 if notify_then_continue:
-                    if self._starvation_grace_until is not None:
-                        self._starvation_grace_until = None
                     # Past T2 the rich stale-None (which carries this error's
                     # code as `reason`) SUPERSEDES the raw error notify: one
                     # coherent delivery instead of two racing writes to
@@ -867,8 +861,6 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     await self._backoff_sleep(retry_delay, last_error_code)
                     continue
                 if continue_while:
-                    if self._starvation_grace_until is not None:
-                        self._starvation_grace_until = None
                     # While the transport axis silently retries, the truth
                     # axis watches the T2 clock: masking an error is allowed
                     # only as long as the last value is still fresh enough
@@ -891,23 +883,17 @@ class ConditionalCycleQuery(BaseCycleQuery):
             except CommunicationTimeoutError:
                 is_starvation, wake_lag, lag_threshold = self._detect_local_starvation(poll_started)
                 if is_starvation:
+                    # Our own loop was frozen: that says nothing about the
+                    # source, so no verdict is made here — poll again and let
+                    # the outcome decide (a value or credible renewal keeps
+                    # the view truthful, a real silence is judged as such).
                     self._last_response = []
                     if not self._starvation_episode_active:
                         logger.warning(
                             f'{self}: event loop starved for {wake_lag:.3f}s '
                             f'(threshold {lag_threshold:.3f}s, {len(self._list_request)} subscriptions affected)')
                         self._starvation_episode_active = True
-                    now_mono = time.monotonic()
-                    if self._starvation_grace_until is None:
-                        self._starvation_grace_until = now_mono + self._timeout
-                        self._hold_stale_view()
-                    elif now_mono >= self._starvation_grace_until:
-                        if self._maybe_synthesize_stale(reason=_EVENT_LOOP_STARVED_REASON):
-                            await self._pulse_event()
-                        else:
-                            self._hold_stale_view()
-                    else:
-                        self._hold_stale_view()
+                    self._hold_stale_view()
                     await asyncio.sleep(0)
                     continue
                 self._starvation_episode_active = False
@@ -924,8 +910,6 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 # Router silence: the lowest layer that still has data is
                 # this one, so stale-synthesis happens here (4002 =
                 # "Application do not answer").
-                if self._starvation_grace_until is not None:
-                    self._starvation_grace_until = None
                 if self._maybe_synthesize_stale(reason=_ROUTER_TIMEOUT_REASON):
                     await self._pulse_event()
                 else:
@@ -1018,7 +1002,6 @@ class ConditionalCycleQuery(BaseCycleQuery):
         self._last_response = batch
         self._stale_delivered = True
         self._stale_view = batch
-        self._starvation_grace_until = None
         # Drop the change bookkeeping: the server never witnessed this None,
         # so on the next successful contact it must redeliver the current
         # value unconditionally (it may be fresh even though we lost touch).
