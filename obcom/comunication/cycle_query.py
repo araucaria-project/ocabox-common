@@ -621,7 +621,10 @@ class ConditionalCycleQuery(BaseCycleQuery):
         T2 staleness verdict runs on — consumers building their own liveness
         watchdogs MUST use this instead of timing deliveries (conditional
         deliveries are once-per-change: a stationary value is silent while
-        perfectly healthy).
+        perfectly healthy). Construction counts as the first contact, exactly
+        as for the internal verdict: a source that never answers becomes
+        stale one bound after start, not before (there is no value to
+        misjudge until then).
         """
         return time.monotonic() - self._last_contact_ts
 
@@ -646,9 +649,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
         transport death — an undeclared subscription (window 30 s) honestly
         cannot vouch finer than that. A declared T2 already caps the window at
         T2 (floored at the 1 s transport resolution), so the bound is T2
-        there. Consumers judging a subscription-fed value (e.g. a sync
-        property read) MUST use ``is_contact_fresh()`` / this bound, never
-        the age of the last delivery or change.
+        there. Consumers judging a subscription-fed value must use this bound
+        (or ``is_contact_fresh()``), never the age of the last delivery or change.
         """
         declared = [r.time_of_data_max_age for r in self._list_request
                     if r.time_of_data_max_age is not None]

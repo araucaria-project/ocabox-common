@@ -1103,7 +1103,16 @@ class TestTruthBound(unittest.IsolatedAsyncioTestCase):
         cq = ConditionalCycleQuery(crs=ScriptedSolver([[make_ok_response()]]),
                                    list_request=[make_request(tolerance=0.05)], delay=0.01)
         self.assertEqual(cq.truth_bound, ConditionalCycleQuery.DEFAULT_REQUEST_TIMEOUT)
+
+    async def test_construction_counts_as_first_contact(self):
+        # Same clock the internal T2 verdict runs on: a source that never
+        # answers is stale one bound after start, not before.
+        cq = ConditionalCycleQuery(crs=ScriptedSolver([[make_ok_response()]]),
+                                   list_request=[make_request(tolerance=0.05)], delay=0.01,
+                                   request_timeout=0.1)
         self.assertTrue(cq.is_contact_fresh())
+        await asyncio.sleep(0.15)
+        self.assertFalse(cq.is_contact_fresh())
 
     async def test_undeclared_explicit_window(self):
         cq = ConditionalCycleQuery(crs=ScriptedSolver([[make_ok_response()]]),
@@ -1127,9 +1136,8 @@ class TestTruthBound(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cq._timeout, 5.0)
 
     async def test_stationary_value_stays_fresh_via_renewals(self):
-        """The textui scenario: one delivery, then a value that never changes.
-        Contact stays fresh through credible renewals; the delivery age is
-        irrelevant."""
+        """One delivery, then a value that never changes: contact stays fresh
+        through credible renewals; the delivery age is irrelevant."""
         script = [[make_ok_response(v=False)],
                   [make_error_response(code=4004, severity=ResponseError.SEVERITY_TEMPORARY)]]
         cq = ConditionalCycleQuery(crs=ScriptedSolver(script),
