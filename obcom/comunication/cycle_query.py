@@ -552,11 +552,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
         if self._error_policy.value_policy is not None:
             for r in self._list_request:
                 r.request_data['value_policy'] = self._error_policy.value_policy.value
-                # T2 default: one full missed refresh cycle beyond the declared
-                # freshness (T1) — "fajne defaulty": nobody has to think about
-                # it and a healthy system's cadence stays governed by T1.
                 if r.time_of_data_max_age is None:
-                    r.time_of_data_max_age = 2 * r.time_of_data_tolerance
+                    r.time_of_data_max_age = ValueRequest.default_max_age(r.time_of_data_tolerance)
         if self._stale_opt_in:
             # The long-poll window must not exceed the truth bound: while a
             # request is in flight the client is blind, so a dead router would
@@ -564,14 +561,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
             # bounds that detection latency; on a healthy connection the 4004
             # renewals then arrive within T2 and keep the contact clock alive
             # (no false staleness, old or new server). Floor of 1s so a very
-            # tight T2 does not turn into a renewal storm.
-            tightest_t2 = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
-                              for r in self._list_request)
-            if tightest_t2 < 1.0:
-                logger.warning(f"{self}: time_of_data_max_age {tightest_t2}s is below the long-poll "
-                               f"transport resolution — transport-death detection is floored at ~1s "
-                               f"(a healthy server still enforces the exact bound server-side)")
-            window = max(1.0, tightest_t2)
+            # tight explicit T2 does not turn into a renewal storm.
+            window = max(1.0, self._tightest_t2())
             if window < self._timeout:
                 self._timeout = window
                 for r in self._list_request:
@@ -980,6 +971,10 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 break
             await asyncio.sleep(0)
 
+    def _tightest_t2(self) -> float:
+        """Whole-batch truth bound: the tightest T2 in force across the batch."""
+        return min(r.effective_max_age for r in self._list_request)
+
     @property
     def _stale_opt_in(self) -> bool:
         """True when this subscription declared ``ValuePolicy.NONE``.
@@ -1006,9 +1001,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # Whole-batch synthesis triggers at the TIGHTEST bound: a late None
         # violates that member's truth bound, an early None for a looser
         # member is merely conservative (masking is permitted, not mandated).
-        tightest_t2 = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
-                          for r in self._list_request)
-        if silence <= tightest_t2:
+        if silence <= self._tightest_t2():
             return False  # still truthful (within the tightest T2) — keep masking
         batch = []
         for i, r in enumerate(self._list_request):
@@ -1068,9 +1061,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
         if not self._stale_opt_in or self._stale_delivered:
             return None
         silence = time.monotonic() - self._last_contact_ts
-        tightest = min((r.time_of_data_max_age or 2 * r.time_of_data_tolerance)
-                       for r in self._list_request)
-        return tightest - silence
+        return self._tightest_t2() - silence
 
     async def _backoff_sleep(self, retry_delay: float, reason) -> None:
         """Sleep the retry backoff, waking at the T2 deadline if it falls

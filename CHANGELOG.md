@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.0]
+### Changed
+- Default truth bound (T2) is `ValueRequest.default_max_age(t1) = max(2*T1,
+  DEFAULT_MAX_AGE_FLOOR=5 s)`, computed in one place; `ValueRequest.
+  effective_max_age` gives the bound in force. An explicit T2 is unchanged
+
 ## [1.3.4]
 ### Added
 - `ConditionalCycleQuery`: exposed the T2 health clock publicly via

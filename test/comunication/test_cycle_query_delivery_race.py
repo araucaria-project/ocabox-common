@@ -30,6 +30,21 @@ from obcom.data_colection.value import Value
 from obcom.data_colection.value_call import ValueRequest, ValueResponse
 
 
+
+# These tests exercise the truth axis with sub-second tolerances; the
+# production floor of the default T2 would stretch every scenario to seconds.
+_FLOOR = None
+
+
+def setUpModule():
+    global _FLOOR
+    _FLOOR = ValueRequest.DEFAULT_MAX_AGE_FLOOR
+    ValueRequest.DEFAULT_MAX_AGE_FLOOR = 0.0
+
+
+def tearDownModule():
+    ValueRequest.DEFAULT_MAX_AGE_FLOOR = _FLOOR
+
 def make_ok_response(addr: str = 'test.subject', v=42, ts: float = 0.0) -> ValueResponse:
     return ValueResponse(address=Address(addr),
                          value=Value(v=v, ts=ts, tags={'from_cf': True}),

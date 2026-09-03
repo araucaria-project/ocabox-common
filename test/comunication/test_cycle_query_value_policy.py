@@ -32,6 +32,21 @@ from obcom.data_colection.value import Value
 from obcom.data_colection.value_call import ValueRequest, ValueResponse
 
 
+# These tests exercise the truth axis with sub-second tolerances; the
+# production floor of the default T2 would stretch every scenario to seconds.
+_FLOOR = None
+
+
+def setUpModule():
+    global _FLOOR
+    _FLOOR = ValueRequest.DEFAULT_MAX_AGE_FLOOR
+    ValueRequest.DEFAULT_MAX_AGE_FLOOR = 0.0
+
+
+def tearDownModule():
+    ValueRequest.DEFAULT_MAX_AGE_FLOOR = _FLOOR
+
+
 def make_ok_response(addr: str = 'test.subject', v=42, ts: float = 0.0) -> ValueResponse:
     return ValueResponse(address=Address(addr),
                          value=Value(v=v, ts=ts, tags={'from_cf': True}),
@@ -141,10 +156,39 @@ class TestValuePolicyWire(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('value_policy', r.request_data)
 
 
+class TestDefaultMaxAge(unittest.TestCase):
+    """The single rule deriving a default truth bound from a tolerance:
+    ``max(2*T1, DEFAULT_MAX_AGE_FLOOR)``. An explicit T2 is never floored."""
+
+    def setUp(self):
+        self._patched = ValueRequest.DEFAULT_MAX_AGE_FLOOR
+        ValueRequest.DEFAULT_MAX_AGE_FLOOR = _FLOOR  # the production value
+
+    def tearDown(self):
+        ValueRequest.DEFAULT_MAX_AGE_FLOOR = self._patched
+
+    def test_floor_is_five_seconds(self):
+        self.assertEqual(ValueRequest.DEFAULT_MAX_AGE_FLOOR, 5.0)
+
+    def test_short_tolerance_gets_the_floor(self):
+        self.assertEqual(ValueRequest.default_max_age(0.5), 5.0)
+        self.assertEqual(ValueRequest.default_max_age(0.25), 5.0)
+
+    def test_long_tolerance_keeps_one_missed_cycle(self):
+        self.assertEqual(ValueRequest.default_max_age(60.0), 120.0)
+
+    def test_effective_max_age_prefers_the_declared_bound(self):
+        declared = ValueRequest(address=Address('test.subject'), time_of_data_tolerance=0.5,
+                                time_of_data_max_age=1.0)
+        self.assertEqual(declared.effective_max_age, 1.0)
+        undeclared = ValueRequest(address=Address('test.subject'), time_of_data_tolerance=0.5)
+        self.assertEqual(undeclared.effective_max_age, 5.0)
+
+
 class TestMaxAgeWire(unittest.IsolatedAsyncioTestCase):
     """T2 (`time_of_data_max_age`) rides as a first-class ValueRequest field."""
 
-    async def test_declared_policy_defaults_max_age_to_twice_tolerance(self):
+    async def test_declared_policy_defaults_max_age_by_the_shared_rule(self):
         crs = ScriptedSolver([[make_ok_response()]])
         cq = ConditionalCycleQuery(crs=crs, list_request=[make_request(tolerance=0.5)],
                                    delay=0.01, error_policy=NONE_POLICY)
@@ -152,7 +196,8 @@ class TestMaxAgeWire(unittest.IsolatedAsyncioTestCase):
         cq.add_callback_async_method(lambda r: calls.append(r) or asyncio.sleep(0))
         await _drive(cq, calls, target=1)
         await cq.stop_and_wait()
-        self.assertEqual(crs.seen_requests[0][0].time_of_data_max_age, 1.0)
+        self.assertEqual(crs.seen_requests[0][0].time_of_data_max_age,
+                         ValueRequest.default_max_age(0.5))
 
     async def test_explicit_max_age_is_kept_and_clamped_to_tolerance(self):
         r = ValueRequest(address=Address('test.subject'), time_of_data_tolerance=1.0,

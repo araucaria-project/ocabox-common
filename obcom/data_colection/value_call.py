@@ -23,6 +23,14 @@ class ValueExchange:
     _CONVERTING_TYPES: ClassVar[list] = [Address, Value, ResponseError, TreeUser]
     DEFAULT_REQUEST_TIMEOUT: ClassVar[float] = 30.0
     DEFAULT_TIME_OF_DATA_TOLERANCE: ClassVar[float] = 60.0
+    # Floor of the default truth bound (T2). ``2*T1`` alone couples the bound
+    # to the refresh cadence: a 0.5 s refresh would give a 1 s bound, which a
+    # single scheduling hiccup breaks. The bound has to absorb the transport
+    # resolution plus a round-trip budget: the long-poll window is capped at
+    # T2 and the server returns the renewal 0.2*window before the deadline, so
+    # a 5 s bound leaves ~1 s for the round trip. An explicit T2 is never
+    # floored.
+    DEFAULT_MAX_AGE_FLOOR: ClassVar[float] = 5.0
 
     @classmethod
     def from_dict(cls, dict_):
@@ -111,6 +119,20 @@ class ValueRequest(ValueExchange):
     # it can never leak to connectors (safe against the 2.3.12 bug class).
     # Declared LAST so pre-1.3.0 positional constructor calls keep working.
     time_of_data_max_age: float or None = None
+
+    @staticmethod
+    def default_max_age(time_of_data_tolerance: float) -> float:
+        """Default T2 for a request declaring only T1: one full missed refresh
+        cycle, floored at :attr:`DEFAULT_MAX_AGE_FLOOR`. The single place the
+        family derives a truth bound from a tolerance."""
+        return max(2 * float(time_of_data_tolerance), ValueRequest.DEFAULT_MAX_AGE_FLOOR)
+
+    @property
+    def effective_max_age(self) -> float:
+        """T2 in force for this request: the declared one, else the default."""
+        if self.time_of_data_max_age is not None:
+            return self.time_of_data_max_age
+        return ValueRequest.default_max_age(self.time_of_data_tolerance)
 
     def __post_init__(self):
         # check timeout
