@@ -3,6 +3,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.4]
+### Added
+- `ConditionalCycleQuery`: exposed the T2 health clock publicly via
+  `last_healthy_contact_age` (property) and `is_contact_fresh(max_age)`
+  (method), read-only accessors over the existing `_last_contact_ts`. No
+  behavior change — consumers building liveness watchdogs should use these
+  instead of timing deliveries, since conditional deliveries are
+  once-per-change and a stationary value is silent while perfectly healthy
+  (#20)
+- `ConditionalCycleQuery.truth_bound`: the contact silence a subscription can
+  vouch for — `max(long-poll window, declared T2)`; `is_contact_fresh()` with
+  no argument judges against it. For consumers judging a subscription-fed
+  value (ocabox sync property reads) (#20)
+
 ## [1.3.3]
 ### Fixed
 - CQ: replaced the lossy `set()`/`sleep(0)`/`clear()` event pulse with a

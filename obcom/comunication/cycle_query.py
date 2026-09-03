@@ -600,13 +600,61 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # value *change*: a value stable for days, confirmed by renewals,
         # is perfectly truthful. Error batches and router silence do not
         # touch this clock. Monotonic: immune to NTP/manual clock jumps
-        # (wall clock is used only for the emitted Value.ts).
+        # (wall clock is used only for the emitted Value.ts). Exposed
+        # publicly via ``last_healthy_contact_age``/``is_contact_fresh`` —
+        # consumers building their own liveness watchdogs MUST use those
+        # instead of timing deliveries.
         self._last_contact_ts: float = time.monotonic()
         # Router-silence warnings are throttled for opted-in subscriptions
         # (the tolerance clock, not the operator, owns the outage there).
         self._timeout_log_state: _LogPolicyState = self._error_policy.normal.log.make_state()
         self._starvation_episode_active: bool = False
         self._starvation_grace_until: Optional[float] = None
+
+    @property
+    def last_healthy_contact_age(self) -> float:
+        """Seconds (monotonic) since the last healthy contact with the source.
+
+        Healthy contact = a delivered value batch or a CREDIBLE 4004 long-poll
+        renewal (server alive, value unchanged-and-fresh). Errors, router
+        silence and instant renewals do not count. This is the same clock the
+        T2 staleness verdict runs on — consumers building their own liveness
+        watchdogs MUST use this instead of timing deliveries (conditional
+        deliveries are once-per-change: a stationary value is silent while
+        perfectly healthy). Construction counts as the first contact, exactly
+        as for the internal verdict: a source that never answers becomes
+        stale one bound after start, not before (there is no value to
+        misjudge until then).
+        """
+        return time.monotonic() - self._last_contact_ts
+
+    def is_contact_fresh(self, max_age: Optional[float] = None) -> bool:
+        """True when the source was known healthy within ``max_age`` seconds.
+
+        ``max_age=None`` judges against :attr:`truth_bound` — the bound this
+        subscription can actually vouch for. Pass an explicit value only when
+        the consumer has a tighter (or looser) requirement of its own.
+        """
+        bound = self.truth_bound if max_age is None else max_age
+        return self.last_healthy_contact_age <= bound
+
+    @property
+    def truth_bound(self) -> float:
+        """Seconds of contact silence this subscription can still vouch for.
+
+        ``max(long-poll window, declared T2)``. A healthy long poll is silent
+        for up to one window (the server holds the request, refreshing at T1
+        and confirming freshness with a 4004 renewal at the end), so contact
+        older than the window is the first moment anything can be known about
+        transport death — an undeclared subscription (window 30 s) honestly
+        cannot vouch finer than that. A declared T2 already caps the window at
+        T2 (floored at the 1 s transport resolution), so the bound is T2
+        there. Consumers judging a subscription-fed value must use this bound
+        (or ``is_contact_fresh()``), never the age of the last delivery or change.
+        """
+        declared = [r.time_of_data_max_age for r in self._list_request
+                    if r.time_of_data_max_age is not None]
+        return max(self._timeout, min(declared)) if declared else self._timeout
 
     def _detect_local_starvation(self, poll_started: Optional[float]):
         """Classify a timeout wake-up as local event-loop starvation.
