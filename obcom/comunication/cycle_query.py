@@ -625,9 +625,34 @@ class ConditionalCycleQuery(BaseCycleQuery):
         """
         return time.monotonic() - self._last_contact_ts
 
-    def is_contact_fresh(self, max_age: float) -> bool:
-        """True when the source was known healthy within ``max_age`` seconds."""
-        return self.last_healthy_contact_age <= max_age
+    def is_contact_fresh(self, max_age: Optional[float] = None) -> bool:
+        """True when the source was known healthy within ``max_age`` seconds.
+
+        ``max_age=None`` judges against :attr:`truth_bound` — the bound this
+        subscription can actually vouch for. Pass an explicit value only when
+        the consumer has a tighter (or looser) requirement of its own.
+        """
+        bound = self.truth_bound if max_age is None else max_age
+        return self.last_healthy_contact_age <= bound
+
+    @property
+    def truth_bound(self) -> float:
+        """Seconds of contact silence this subscription can still vouch for.
+
+        ``max(long-poll window, declared T2)``. A healthy long poll is silent
+        for up to one window (the server holds the request, refreshing at T1
+        and confirming freshness with a 4004 renewal at the end), so contact
+        older than the window is the first moment anything can be known about
+        transport death — an undeclared subscription (window 30 s) honestly
+        cannot vouch finer than that. A declared T2 already caps the window at
+        T2 (floored at the 1 s transport resolution), so the bound is T2
+        there. Consumers judging a subscription-fed value (e.g. a sync
+        property read) MUST use ``is_contact_fresh()`` / this bound, never
+        the age of the last delivery or change.
+        """
+        declared = [r.time_of_data_max_age for r in self._list_request
+                    if r.time_of_data_max_age is not None]
+        return max(self._timeout, min(declared)) if declared else self._timeout
 
     def _detect_local_starvation(self, poll_started: Optional[float]):
         """Classify a timeout wake-up as local event-loop starvation.

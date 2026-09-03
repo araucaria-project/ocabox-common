@@ -1095,6 +1095,64 @@ class TestHealthClock(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(cq.is_contact_fresh(0.01))
 
 
+class TestTruthBound(unittest.IsolatedAsyncioTestCase):
+    """``truth_bound`` = max(long-poll window, declared T2): the contact
+    silence a subscription can vouch for; ``is_contact_fresh()`` defaults to it."""
+
+    async def test_undeclared_subscription_vouches_for_its_window(self):
+        cq = ConditionalCycleQuery(crs=ScriptedSolver([[make_ok_response()]]),
+                                   list_request=[make_request(tolerance=0.05)], delay=0.01)
+        self.assertEqual(cq.truth_bound, ConditionalCycleQuery.DEFAULT_REQUEST_TIMEOUT)
+        self.assertTrue(cq.is_contact_fresh())
+
+    async def test_undeclared_explicit_window(self):
+        cq = ConditionalCycleQuery(crs=ScriptedSolver([[make_ok_response()]]),
+                                   list_request=[make_request(tolerance=0.05)], delay=0.01,
+                                   request_timeout=7.0)
+        self.assertEqual(cq.truth_bound, 7.0)
+
+    async def test_declared_tight_t2_is_floored_at_transport_resolution(self):
+        # T1=0.05 -> T2=0.1 -> window max(1, 0.1) = 1 s: the bound is the window
+        cq = ConditionalCycleQuery(crs=ScriptedSolver([[make_ok_response()]]),
+                                   list_request=[make_request(tolerance=0.05)], delay=0.01,
+                                   error_policy=NONE_POLICY)
+        self.assertEqual(cq.truth_bound, 1.0)
+
+    async def test_declared_t2_is_the_bound(self):
+        req = make_request(tolerance=0.5)
+        req.time_of_data_max_age = 5.0
+        cq = ConditionalCycleQuery(crs=ScriptedSolver([[make_ok_response()]]),
+                                   list_request=[req], delay=0.01, error_policy=NONE_POLICY)
+        self.assertEqual(cq.truth_bound, 5.0)
+        self.assertEqual(cq._timeout, 5.0)
+
+    async def test_stationary_value_stays_fresh_via_renewals(self):
+        """The textui scenario: one delivery, then a value that never changes.
+        Contact stays fresh through credible renewals; the delivery age is
+        irrelevant."""
+        script = [[make_ok_response(v=False)],
+                  [make_error_response(code=4004, severity=ResponseError.SEVERITY_TEMPORARY)]]
+        cq = ConditionalCycleQuery(crs=ScriptedSolver(script),
+                                   list_request=[make_request(tolerance=0.05)], delay=0.01,
+                                   request_timeout=0.2)
+        cq._renewal_credible_after = 0.0  # scripted renewals are instant
+        calls = []
+
+        async def on_msg(resp):
+            calls.append(list(resp))
+
+        cq.add_callback_async_method(on_msg)
+        cq.start()
+        deadline = asyncio.get_event_loop().time() + 1.0
+        while len(calls) < 1 and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.3)  # > window: only renewals, no deliveries
+        fresh = cq.is_contact_fresh()
+        await cq.stop_and_wait()
+        self.assertEqual(len(calls), 1, "a stationary value is delivered once")
+        self.assertTrue(fresh)
+
+
 class TestPolicyShape(unittest.TestCase):
 
     def test_default_policies_are_undeclared(self):

@@ -12,6 +12,10 @@ All notable changes to this project will be documented in this file.
   instead of timing deliveries, since conditional deliveries are
   once-per-change and a stationary value is silent while perfectly healthy
   (#20)
+- `ConditionalCycleQuery.truth_bound`: the contact silence a subscription can
+  vouch for — `max(long-poll window, declared T2)`; `is_contact_fresh()` with
+  no argument judges against it. For consumers judging a subscription-fed
+  value (ocabox sync property reads) (#20)
 
 ## [1.3.3]
 ### Fixed
