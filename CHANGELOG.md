@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.0]
+### Changed
+- ErrorPolicy.DISPLAY stops on CRITICAL like every other preset (NOTIFY-and-heal removed).
+### Added
+- CycleQuery.stop_reason (the server error that stopped the query) and one ERROR log line per stop.
+
 ## [1.4.0]
 ### Changed
 - Default truth bound (T2) is `ValueRequest.default_max_age(t1) = max(2*T1,
