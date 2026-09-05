@@ -169,6 +169,17 @@ class TestErrorPolicy(unittest.TestCase):
         self.assertEqual(policy.temporary.budget.max_attempts, 3)
         self.assertEqual(policy.normal.action, SeverityAction.STOP)
 
+    def test_display_critical_is_stop(self):
+        self.assertEqual(ErrorPolicy.DISPLAY.critical.action, SeverityAction.STOP)
+
+    def test_every_preset_stops_on_critical(self):
+        for preset in (
+                ErrorPolicy.INTERACTIVE,
+                ErrorPolicy.SERVICE,
+                ErrorPolicy.FAIL_FAST,
+                ErrorPolicy.DISPLAY):
+            self.assertEqual(preset.critical.action, SeverityAction.STOP)
+
 
 if __name__ == '__main__':
     unittest.main()

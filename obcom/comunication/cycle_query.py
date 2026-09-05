@@ -147,6 +147,7 @@ class BaseCycleQuery(ABC):
         self._additional_request_data = [{} for _ in range(
             len(self._list_request))]  # data to put to nex request in `request_data` dict
         self._errors: CommunicationRuntimeError or None = None
+        self._stop_reason: Optional[ResponseError] = None
         self._callback_methods_a: list = []
         self._callback_methods: list = []
         self._callback_task: asyncio.Task or None = None
@@ -196,6 +197,11 @@ class BaseCycleQuery(ABC):
     async def get_response(self) -> List[ValueResponse]:
         """
         This method waits for the next response and returns it when it comes.
+
+        On STOP (CRITICAL or spent retry budget), consumers receive one final
+        delivery: the batch that caused the stop (`status=False`,
+        `error=<ResponseError>`). After that `_errors` is set, `is_stopped()`
+        becomes True, `stop_reason` is set, and no further deliveries follow.
 
         :raise CommunicationRuntimeError: when cycle request loop was stopped or message can't retrieve for other reason
         :return: new response as object ValueResponse
@@ -287,6 +293,7 @@ class BaseCycleQuery(ABC):
         Method starts cycle query if not started yet.
         """
         if self.is_stopped():
+            self._stop_reason = None
             self._run()
             self._run_callbacks()
         else:
@@ -334,9 +341,20 @@ class BaseCycleQuery(ABC):
     def add_callback_async_method(self, method):
         """
         This method added a given method to list method with one run after cycle query retrieve a nev message
+        On STOP (CRITICAL or spent retry budget), consumers receive one final
+        callback with the stopping batch (`status=False`,
+        `error=<ResponseError>`), then the query stops (`_errors` set,
+        `is_stopped()` True, `stop_reason` set) and no further callbacks follow.
         :param method: asyncio method
         """
         self._callback_methods_a.append(method)
+
+    @property
+    def stop_reason(self) -> Optional[ResponseError]:
+        """The server error that stopped this query (CRITICAL, or a retry budget spent on it).
+        None while running, after a plain stop(), or when the stop came from the transport
+        axis (missed messages, protocol error) — ``_errors`` carries those."""
+        return self._stop_reason
 
     def add_callback_method(self, method):
         """
@@ -797,6 +815,11 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         )
                         action = SeverityAction.STOP
                     if action == SeverityAction.STOP:
+                        self._stop_reason = r.error
+                        logger.error(
+                            f'{self}: address ({str(r.address)}) stopped on severity={severity} '
+                            f'code={r.error.code}: {r.error.message} — subscription stopped; '
+                            f'fix the configuration and resubscribe')
                         raise CommunicationRuntimeError(
                             message=f"Client retrieve response with error: {str(r.error)}")
                     # RETRY or NOTIFY: log according to the rule's

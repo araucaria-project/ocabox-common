@@ -374,9 +374,10 @@ ErrorPolicy.FAIL_FAST = ErrorPolicy(
 # once the shown value is older than T2 (``time_of_data_max_age``, default
 # ``ValueRequest.default_max_age(T1)``) the widget receives a rich ``Value(None)``
 # (and can grey out / render last_good from tags) instead of silently
-# displaying stale numbers. CRITICAL uses NOTIFY
-# rather than STOP: a wall display must show the error *and* keep healing
-# itself — nobody is there to restart a dead widget.
+# displaying stale numbers. CRITICAL means the server sees no chance of
+# success under the current configuration (address, method, access), so it
+# stops the subscription for every identity; a wall display heals through
+# NORMAL, which retries forever.
 #
 # The pre-existing presets deliberately keep ``value_policy=None``
 # (undeclared): declaring it makes clients send a new request field, which
@@ -393,9 +394,8 @@ ErrorPolicy.DISPLAY = ErrorPolicy(
         log=LogPolicy(first_n=3, then_every_seconds=3600.0),
     ),
     critical=SeverityRule(
-        action=SeverityAction.NOTIFY,
-        backoff=Backoff.staged([(10.0, 3), (60.0, None)]),
-        log=LogPolicy(first_n=3, then_every_seconds=3600.0),
+        action=SeverityAction.STOP,
+        log=LogPolicy(first_n=1),
     ),
     value_policy=ValuePolicy.NONE,
 )
