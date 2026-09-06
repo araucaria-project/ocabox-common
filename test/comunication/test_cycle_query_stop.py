@@ -28,8 +28,9 @@ class TestCycleQueryStop(unittest.IsolatedAsyncioTestCase):
             [make_error_response(severity=ResponseError.SEVERITY_CRITICAL, code=3002)],
             [make_ok_response(v=11)],
         ]
+        solver = StubRequestSolver(script)
         cq = ConditionalCycleQuery(
-            crs=StubRequestSolver(script),
+            crs=solver,
             list_request=[make_request()],
             delay=0.01,
             error_policy=ErrorPolicy.DISPLAY,
@@ -47,7 +48,10 @@ class TestCycleQueryStop(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertFalse(calls[0][0].status)
-        self.assertTrue(cq.is_stopped() or (cq._task is not None and cq._task.done()))
+        self.assertEqual(calls[0][0].error.severity, ResponseError.SEVERITY_CRITICAL)
+        self.assertIs(cq.stop_reason, calls[0][0].error)
+        self.assertEqual(solver.observed_call_count, 1)
+        self.assertTrue(cq.is_stopped())
 
     async def test_stop_reason_exposed(self):
         code = 3002
@@ -98,12 +102,19 @@ class TestCycleQueryStop(unittest.IsolatedAsyncioTestCase):
             delay=0.01,
             error_policy=policy,
         )
-        cq.start()
-        await _wait_until_stopped(cq, timeout=2.0)
-        await cq.stop_and_wait()
+        with self.assertLogs('cycle_query', level='ERROR') as cm:
+            cq.start()
+            await _wait_until_stopped(cq, timeout=2.0)
+            await cq.stop_and_wait()
         self.assertIsNotNone(cq.stop_reason)
         self.assertEqual(cq.stop_reason.code, 2003)
         self.assertEqual(cq.stop_reason.severity, ResponseError.SEVERITY_NORMAL)
+        self.assertEqual(len(cm.records), 1)
+        message = cm.records[0].getMessage()
+        self.assertIn('retry budget exhausted', message)
+        self.assertIn('severity=NORMAL', message)
+        self.assertIn('attempts=2', message)
+        self.assertIn('subscription stopped', message)
 
     async def test_stop_logs_one_error_line(self):
         script = [[make_error_response(
@@ -126,7 +137,26 @@ class TestCycleQueryStop(unittest.IsolatedAsyncioTestCase):
         self.assertIn('scope.bad.address', message)
         self.assertIn('code=3002', message)
         self.assertIn('severity=CRITICAL', message)
-        self.assertIn('subscription stopped', message)
+        self.assertIn('no chance of success under the current configuration', message)
+        self.assertIn('fix it and resubscribe', message)
+
+    async def test_stop_reason_persists_until_restart(self):
+        script = [[make_error_response(severity=ResponseError.SEVERITY_CRITICAL, code=3002)]]
+        cq = ConditionalCycleQuery(
+            crs=StubRequestSolver(script),
+            list_request=[make_request()],
+            delay=0.01,
+            error_policy=ErrorPolicy.DISPLAY,
+        )
+        cq.start()
+        await _wait_until_stopped(cq)
+        reason = cq.stop_reason
+        self.assertIsNotNone(reason)
+        cq.stop()
+        self.assertIs(cq.stop_reason, reason)
+        cq.start()
+        self.assertIsNone(cq.stop_reason)
+        await cq.stop_and_wait()
 
 
 if __name__ == '__main__':

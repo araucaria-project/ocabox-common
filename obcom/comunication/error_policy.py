@@ -393,10 +393,7 @@ ErrorPolicy.DISPLAY = ErrorPolicy(
         backoff=Backoff.staged([(2.0, 3), (10.0, 6), (60.0, None)]),
         log=LogPolicy(first_n=3, then_every_seconds=3600.0),
     ),
-    critical=SeverityRule(
-        action=SeverityAction.STOP,
-        log=LogPolicy(first_n=1),
-    ),
+    critical=SeverityRule(action=SeverityAction.STOP),
     value_policy=ValuePolicy.NONE,
 )
 

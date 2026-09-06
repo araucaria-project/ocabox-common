@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 - ErrorPolicy.DISPLAY stops on CRITICAL like every other preset (NOTIFY-and-heal removed).
 ### Added
 - CycleQuery.stop_reason (the server error that stopped the query) and one ERROR log line per stop.
+- Rollout constraint: deploy with ocabox-server >= 2.8.0 on TIC first (catch-all CRITICALs reclassified there).
 
 ## [1.4.0]
 ### Changed
