@@ -1188,7 +1188,7 @@ class TestPolicyShape(unittest.TestCase):
         p = ErrorPolicy.DISPLAY
         self.assertIs(p.value_policy, ValuePolicy.NONE)
         self.assertEqual(p.normal.action, SeverityAction.RETRY)
-        self.assertEqual(p.critical.action, SeverityAction.NOTIFY)
+        self.assertEqual(p.critical.action, SeverityAction.STOP)
 
     def test_with_overrides_accepts_value_policy_string(self):
         p = ErrorPolicy.SERVICE.with_overrides(value_policy='none')
