@@ -67,6 +67,17 @@ class TestCheckJk15(unittest.TestCase):
         by_day = check(self.g, night(sun_alt_deg=20, tertiary="beso"), "camera", "dark_strict")
         self.assertIsInstance(by_day, Active)  # `when: sky.science` fails by day → second alternative (via tertiary=beso) is active
 
+    def test_alternatives_are_ordered_fallbacks_when_the_preferred_one_is_held(self):
+        idle = night(tertiary="beso")
+        held = ProvenState(selectors=idle.selectors, environment=idle.environment, holds={"covercalibrator": Hold("open", "beso-run")})
+        verdict = check(self.g, held, "camera", "dark_strict")  # the cover-closed alternative applies at night but collides
+        self.assertIsInstance(verdict, Active)  # so the unconditional M3-away alternative answers
+        self.assertEqual(verdict.positions, {"tertiary": "beso"})
+        only_cover = {**jk15()["camera"], "paths": {**jk15()["camera"]["paths"], "dark_cover": {"see": "dark", "via": {"covercalibrator": "close"}}}}
+        verdict = check(parse_graph(jk15(camera=only_cover)), held, "camera", "dark_cover")
+        self.assertIsInstance(verdict, Collision)  # a single alternative has no fallback: the hold is the answer
+        self.assertEqual(verdict.holder, "beso-run")
+
     def test_impossible_names_the_unavailable_class(self):
         verdict = check(self.g, night(sun_alt_deg=20), "camera", "object")
         self.assertIsInstance(verdict, Impossible)

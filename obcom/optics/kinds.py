@@ -51,7 +51,6 @@ class Emit:
 Signal = Transmit | Emit
 Signals = frozenset[Signal]
 DARK_OUT: Signals = frozenset({Emit(DARK)})
-UNDEFINED_OUT: Signals = frozenset({Emit(UNDEFINED)})
 
 
 def is_dark(signal: Signal) -> bool:
@@ -365,9 +364,6 @@ class Selector(Kind):
         if self.is_fan_in(spec) or self.gate:
             return frozenset({OUT})
         return frozenset(self.positions(spec))
-
-    def aspect(self, name: str) -> Aspect | None:
-        return next((a for a in self.aspects if a.name == name), None)
 
     def axes(self, spec):
         return (Axis(None, self.positions(spec), derive=self.derive_position), *(a.axis() for a in self.aspects))

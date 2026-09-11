@@ -56,7 +56,8 @@ def compile_observatory(
     registry: KindRegistry = DEFAULT_REGISTRY,
     generator: str | None = None,
 ) -> OpticsCompiled:
-    """``{telescope: components-or-spec}`` → the whole-observatory compilate."""
+    """``{telescope: components-block-or-spec}`` → the whole-observatory compilate. A mapping is a
+    telescope's ``components:`` block; presets travel inside a :class:`TelescopeOpticsSpec`."""
     compiled = {}
     for name, components in telescopes.items():
         spec = components if isinstance(components, TelescopeOpticsSpec) else _as_spec(components)
@@ -91,8 +92,6 @@ def default_generator() -> str:
 
 
 def _as_spec(components: Mapping) -> TelescopeOpticsSpec:
-    if "components" in components and all(isinstance(v, Mapping) for v in components.values()) and set(components) <= {"components", "presets"}:
-        return TelescopeOpticsSpec.model_validate(components)
     return TelescopeOpticsSpec.model_validate({"components": components})
 
 

@@ -1,10 +1,15 @@
 """``check`` and ``resolve``: paths-as-goals judged against the proven state.
 
-``check(detector, function)`` walks the function's alternatives in authored order and answers
-with the first that applies: ``active`` (the detector sees exactly the goal now), ``settable``
-(these selector moves get there), ``collision`` (a needed selector is held elsewhere),
-``impossible`` (no source provides the goal now). ``invalid`` never comes from here — the graph
-would not have loaded.
+``check(detector, function)`` walks the function's alternatives in authored order. An alternative
+whose ``when`` light is not available now is skipped; the first one that is ``active`` (the detector
+sees exactly the goal now) or ``settable`` (these selector moves get there) answers. Alternatives
+are **ordered fallbacks**: one that applies but cannot be realised now — a needed selector held
+elsewhere, its source not emitting — lets the next alternative answer, and only when none can is
+the verdict ``collision`` (the first hold met) or ``impossible`` (what is unavailable). Authoring
+``dark_strict: [{see: dark, via: {covercalibrator: close}, when: sky.science}, {see: dark, via:
+{tertiary: beso}}]`` therefore means "the closed cover at night, else M3 away" — an author who wants
+no fallback writes one alternative. ``invalid`` never comes from here — the graph would not have
+loaded.
 
 Among several settable routes the solver prefers, in order: fewest moves, least collateral
 change to what the *other* detectors see, the blocking/emitting terminal closest to the
