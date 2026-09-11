@@ -453,6 +453,12 @@ class Splitter(Kind):
     def outputs(self, spec):
         return frozenset(spec.positions) if spec.positions is not None else None
 
+    def transfer(self, spec, values):
+        outputs = self.outputs(spec)
+        if outputs is None:
+            return {OUT: frozenset({Transmit()})}  # open: the row applies to whatever port a downstream names
+        return {port: frozenset({Transmit()}) for port in outputs}
+
 
 @dataclass(frozen=True)
 class Passive(Kind):

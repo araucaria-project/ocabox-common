@@ -134,6 +134,14 @@ class TestAspectOnOutputPortSelector(unittest.TestCase):
         self.assertEqual(classes(sees(self.g, night(), "guider_beso")), {(UNDEFINED, "tertiary")})
 
 
+class TestDeclaredSplitterPorts(unittest.TestCase):
+
+    def test_a_splitter_with_declared_ports_feeds_each_of_them(self):
+        g = parse_graph(jk15(pickoff={"kind": "splitter", "positions": {"main": {}, "guide": {}}, "optics": {"from": "derotator"}}))
+        self.assertEqual(classes(sees(g, night(), "camera")), {("sky.science", "sky")})
+        self.assertEqual(classes(sees(g, night(), "guider")), {("sky.science", "sky")})
+
+
 class TestMultiPortEdge(unittest.TestCase):
     """``from: {X: [p1, p2]}`` is one edge live on either port, not two edges one of which is dark."""
 
