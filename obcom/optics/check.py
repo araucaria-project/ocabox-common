@@ -1,0 +1,195 @@
+"""``check`` and ``resolve``: paths-as-goals judged against the proven state.
+
+``check(detector, function)`` walks the function's alternatives in authored order and answers
+with the first that applies: ``active`` (the detector sees exactly the goal now), ``settable``
+(these selector moves get there), ``collision`` (a needed selector is held elsewhere),
+``impossible`` (no source provides the goal now). ``invalid`` never comes from here — the graph
+would not have loaded.
+
+Among several settable routes the solver prefers, in order: fewest moves, least collateral
+change to what the *other* detectors see, the blocking/emitting terminal closest to the
+detector, authored order. Operational policy beyond that (never close the dome for a dark) is
+authored with ``via`` or presets, not guessed here.
+"""
+
+from __future__ import annotations
+
+from typing import Iterable, Mapping
+
+from datamodels.optics import (
+    DARK,
+    UNDEFINED,
+    Active,
+    CheckResult,
+    Collision,
+    GoalSpec,
+    Impossible,
+    SeesRecord,
+    Settable,
+    Verdict,
+    split_state_key,
+)
+
+from obcom.optics.graph import OpticalGraph
+from obcom.optics.kinds import Selector, Source
+from obcom.optics.routes import StaticRoute, enumerate_routes, routes_for_goal
+from obcom.optics.sees import available_classes, sees
+from obcom.optics.state import ProvenState, Unknown, proven_position
+
+
+class UnknownFunction(LookupError):
+    """The detector declares no such path — a caller error, not a config error."""
+
+
+def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str) -> Verdict:
+    node = graph.node(detector)
+    if node.paths is None or function not in node.paths:
+        declared = sorted(node.paths) if node.paths is not None else []
+        raise UnknownFunction(f"{detector} declares no path {function!r} (declared: {declared})")
+
+    now = sees(graph, state, detector)
+    available = available_classes(graph, state)
+    routes = enumerate_routes(graph, detector)
+    alternatives = node.paths.alternatives(function)
+    proven, assumed = _proven_map(graph, state, _keys(routes, alternatives))
+    others = tuple(d for d in graph.detectors if d != detector)
+    others_now = {d: frozenset(r.light_class for r in sees(graph, state, d)) for d in others}
+
+    unavailable: str | None = None
+    not_emitting: set[str] = set()
+    collision: Collision | None = None
+    applicable = False
+    for alt in alternatives:
+        if alt.when is not None and alt.when not in available:
+            continue
+        applicable = True
+        if _is_active(now, alt, proven):
+            on_path = {c for r in now for c in (r.terminal, *r.via)}
+            positions = {
+                k: v for k, v in proven.items() if v is not None and k not in assumed and split_state_key(k)[0] in on_path
+            }
+            return Active(see=alt.see, positions=positions)
+
+        feasible: list[tuple[tuple[int, int, int, int], StaticRoute, dict[str, str]]] = []
+        for index, route in enumerate(routes_for_goal(routes, alt)):
+            if not _source_emits_now(graph, state, route, alt.see):
+                unavailable = unavailable or alt.see
+                not_emitting.add(route.terminal)
+                continue
+            moves = route.moves_from(proven)
+            held = _collision(state, route, moves, alt.see)
+            if held is not None:
+                collision = collision or held
+                continue
+            collateral = _collateral(graph, state, others_now, route)
+            feasible.append(((len(moves), collateral, len(route.via), index), route, moves))
+        if feasible:
+            _, route, moves = min(feasible, key=lambda t: t[0])
+            return Settable(see=alt.see, positions=dict(route.positions), moves=moves)
+
+    if collision is not None:
+        return collision
+    undefined_at = tuple(sorted({k for k, v in proven.items() if v is None} | {r.terminal for r in now if r.light_class == UNDEFINED}))
+    have = ", ".join(sorted(available)) or "nothing"
+    if not applicable:
+        reason = f"no alternative of {detector}.{function} applies now (when-conditions unmet; available: {have})"
+    elif unavailable is not None:
+        who = ", ".join(sorted(not_emitting)) or "no source"
+        reason = f"{who} not providing {unavailable!r} now (available: {have})"
+    else:
+        reason = f"no route to {detector}.{function} can be set now"
+    if undefined_at:
+        reason += f"; undefined: {', '.join(undefined_at)}"
+    return Impossible(reason=reason, unavailable=unavailable, undefined_at=undefined_at)
+
+
+def check_result(graph: OpticalGraph, state: ProvenState, detector: str, function: str) -> CheckResult:
+    return CheckResult(detector=detector, function=function, verdict=check(graph, state, detector, function))
+
+
+def resolve(graph: OpticalGraph, state: ProvenState, detector: str, function: str) -> dict[str, str] | None:
+    """The selector positions that realise ``function`` on ``detector`` — the proven ones when
+    already active, the target ones when settable; ``None`` when neither."""
+    verdict = check(graph, state, detector, function)
+    if isinstance(verdict, (Active, Settable)):
+        return dict(verdict.positions)
+    return None
+
+
+# --- internals ---------------------------------------------------------------------------------
+
+
+def _keys(routes: Iterable[StaticRoute], alternatives: Iterable[GoalSpec]) -> set[str]:
+    keys: set[str] = set()
+    for r in routes:
+        keys |= set(r.positions)
+    for alt in alternatives:
+        keys |= set(alt.via)
+    return keys
+
+
+def _proven_map(graph: OpticalGraph, state: ProvenState, keys: Iterable[str]) -> tuple[dict[str, str | None], frozenset[str]]:
+    """StateKey → proven symbol, ``None`` for undefined. An aspect nobody reports is taken as
+    ``off`` (nothing asserted, nothing emitted) and listed in the returned ``assumed`` set so that
+    it is never reported as *proven*."""
+    result: dict[str, str | None] = {}
+    assumed: set[str] = set()
+    for key in sorted(keys):
+        component, aspect = split_state_key(key)
+        node = graph.nodes[component]
+        pos = proven_position(graph, state, node, aspect)
+        if pos is Unknown.ABSENT and aspect is not None and isinstance(node.kind, Selector):
+            asp = node.kind.aspect(aspect)
+            result[key] = asp.off if asp is not None else None
+            assumed.add(key)
+        else:
+            result[key] = None if isinstance(pos, Unknown) else pos
+    return result, frozenset(assumed)
+
+
+def _collateral(graph: OpticalGraph, state: ProvenState, others_now: Mapping[str, frozenset[str]], route: StaticRoute) -> int:
+    """How many other detectors would see different light classes after setting ``route``."""
+    after = state.with_positions(dict(route.positions))
+    changed = 0
+    for detector, before in others_now.items():
+        if frozenset(r.light_class for r in sees(graph, after, detector)) != before:
+            changed += 1
+    return changed
+
+
+def _is_active(now: frozenset[SeesRecord], alt: GoalSpec, proven: Mapping[str, str | None]) -> bool:
+    """Active = the detector sees the goal class and *nothing else*, through the pinned ``via``."""
+    if not now or any(r.light_class != alt.see for r in now):
+        return False
+    for record in now:
+        on_path = {record.terminal, *record.via}
+        for key, symbol in alt.via.items():
+            if split_state_key(key)[0] not in on_path or proven.get(key) != symbol:
+                return False
+    return True
+
+
+def _source_emits_now(graph: OpticalGraph, state: ProvenState, route: StaticRoute, see: str) -> bool:
+    if see == DARK:
+        return True
+    terminal = graph.nodes[route.terminal]
+    if isinstance(terminal.kind, Source):
+        telemetry = state.selectors.get(terminal.name)
+        pos = None if telemetry is None else telemetry.position
+        return terminal.kind.emission(terminal.spec, pos, state.environment) == see
+    return True  # an emitting aspect is switched on by the route itself
+
+
+def _collision(state: ProvenState, route: StaticRoute, moves: Mapping[str, str], see: str) -> Collision | None:
+    for key, required in moves.items():
+        hold = state.holds.get(key)
+        if hold is not None and hold.position != required:
+            by = f" by {hold.holder}" if hold.holder else ""
+            return Collision(
+                selector=key,
+                required=required,
+                held=hold.position,
+                holder=hold.holder,
+                reason=f"{key} is held at {hold.position!r}{by}; {see!r} needs {required!r}",
+            )
+    return None

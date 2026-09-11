@@ -1,0 +1,32 @@
+name: optics
+
+# The Optical Path Model reference solver (obcom.optics) and its conformance vectors — the golden
+# suite every non-Python traversal (the browser visualizer) replays. Only the optics package is
+# exercised here; the ZMQ/communication suites need a live broker and stay local.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  optics:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pipx install poetry
+      - run: poetry install
+      - run: poetry run python -m unittest discover -s test/optics -t .
+      - run: poetry run optics-conformance optics_conformance.json
+      - uses: actions/upload-artifact@v4
+        if: matrix.python-version == '3.12'
+        with:
+          name: optics-conformance
+          path: optics_conformance.json
