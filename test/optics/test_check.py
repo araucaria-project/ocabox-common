@@ -139,6 +139,14 @@ class TestCheckBesoAndTmmt(unittest.TestCase):
         self.assertIsInstance(verdict, Impossible)
         self.assertIn("thar_lamp", verdict.reason)
 
+    def test_unusable_lamp_telemetry_never_makes_a_route_settable(self):
+        g = parse_graph(BESO)
+        base = {"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "sky", "m5": "thar"}
+        state = ProvenState.build(base, stale=["thar_lamp"], sun_alt_deg=-30)
+        verdict = check(g, state, "beso", "arc")
+        self.assertIsInstance(verdict, Impossible)
+        self.assertIn("thar_lamp", verdict.undefined_at)
+
     def test_no_selectors_at_all(self):
         g = parse_graph(TMMT)
         self.assertIsInstance(check(g, ProvenState.build({}, sun_alt_deg=-30), "cam_a", "object"), Active)

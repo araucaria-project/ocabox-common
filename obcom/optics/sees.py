@@ -30,7 +30,7 @@ def available_classes(graph: OpticalGraph, state: ProvenState) -> frozenset[str]
     classes: set[str] = set()
     for node in graph.nodes.values():
         if isinstance(node.kind, Source):
-            classes.add(_emission(state, node))
+            classes.add(source_emission(graph, state, node))
         for aspect in node.aspects:
             if proven_position(graph, state, node, aspect.name) == aspect.on:
                 classes.add(aspect.emits)
@@ -45,10 +45,15 @@ def _through(records: frozenset[SeesRecord], node: str) -> frozenset[SeesRecord]
     return frozenset(SeesRecord(light_class=r.light_class, terminal=r.terminal, via=r.via + (node,)) for r in records)
 
 
-def _emission(state: ProvenState, node: Node) -> str:
+def source_emission(graph: OpticalGraph, state: ProvenState, node: Node) -> str:
+    """The class a source puts out now, judged like a selector: telemetry that is moving, stale,
+    unmapped or ``None`` makes the source ``undefined``; no telemetry at all asserts nothing and
+    the kind decides (a lamp is taken as lit, the sky needs the sun)."""
     assert isinstance(node.kind, Source)
-    position = state.selectors.get(node.name)
-    pos = None if position is None or position.position is None else position.position
+    position = proven_position(graph, state, node)
+    if position is Unknown.UNDEFINED:
+        return UNDEFINED
+    pos = None if position is Unknown.ABSENT else position
     emitted = node.kind.emission(node.spec, pos, state.environment)
     return UNDEFINED if emitted is None else emitted
 
@@ -72,7 +77,7 @@ def _out(graph: OpticalGraph, state: ProvenState, node: Node, port: str | None, 
 def _compute_out(graph: OpticalGraph, state: ProvenState, node: Node, port: str | None, memo) -> frozenset[SeesRecord]:
     name = node.name
     if node.archetype == Archetype.SOURCE:
-        return frozenset({_record(_emission(state, node), name)})
+        return frozenset({_record(source_emission(graph, state, node), name)})
     if node.archetype in (Archetype.PASSIVE, Archetype.SPLITTER):
         return _through(_inputs(graph, state, node, memo), name)
     if node.archetype == Archetype.DETECTOR:

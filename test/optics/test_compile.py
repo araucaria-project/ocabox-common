@@ -50,6 +50,13 @@ class TestCompile(unittest.TestCase):
         self.assertEqual(strict[0].when, "sky.science")
         self.assertEqual(strict[1].positions, {"tertiary": "beso"})
 
+    def test_physical_realizations_of_one_alternative_get_distinct_keys(self):
+        compiled = compile_telescope(parse_graph(jk15()))
+        dark = [r for r in compiled.routes if r.function == "dark"]
+        self.assertEqual(sorted(r.realization for r in dark), [0, 1, 2])  # dome closed / cover closed / M3 away
+        keys = {(r.detector, r.function, r.alternative, r.realization) for r in compiled.routes}
+        self.assertEqual(len(keys), len(compiled.routes))
+
     def test_conflicts_only_across_detectors_with_reasons(self):
         compiled = compile_telescope(parse_graph(with_beso_paths()))
         self.assertTrue(compiled.conflicts)
@@ -57,6 +64,7 @@ class TestCompile(unittest.TestCase):
             self.assertNotEqual(c.a.detector, c.b.detector)
         m3 = [c for c in compiled.conflicts if c.selector == "tertiary" and c.a.function == "object" and c.b.function == "object"]
         self.assertEqual(len(m3), 1)
+        self.assertEqual((m3[0].a.realization, m3[0].b.realization), (0, 0))
         self.assertEqual((m3[0].a_requires, m3[0].b_requires), ("andor", "beso"))
         self.assertEqual(m3[0].reason, "camera.object needs tertiary=andor, guider_beso.object needs tertiary=beso")
         # camera's dark-via-M3-away route and guider_beso's object route agree on tertiary=beso: no conflict

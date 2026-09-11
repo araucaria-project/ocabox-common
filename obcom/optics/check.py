@@ -33,7 +33,7 @@ from datamodels.optics import (
 from obcom.optics.graph import OpticalGraph
 from obcom.optics.kinds import Selector, Source
 from obcom.optics.routes import StaticRoute, enumerate_routes, routes_for_goal
-from obcom.optics.sees import available_classes, sees
+from obcom.optics.sees import available_classes, sees, source_emission
 from obcom.optics.state import ProvenState, Unknown, proven_position
 
 
@@ -57,6 +57,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
 
     unavailable: str | None = None
     not_emitting: set[str] = set()
+    undefined_sources: set[str] = set()
     collision: Collision | None = None
     applicable = False
     for alt in alternatives:
@@ -72,9 +73,12 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
 
         feasible: list[tuple[tuple[int, int, int, int], StaticRoute, dict[str, str]]] = []
         for index, route in enumerate(routes_for_goal(routes, alt)):
-            if not _source_emits_now(graph, state, route, alt.see):
+            emitted = _terminal_emission(graph, state, route)
+            if emitted is not None and emitted != alt.see:
                 unavailable = unavailable or alt.see
                 not_emitting.add(route.terminal)
+                if emitted == UNDEFINED:
+                    undefined_sources.add(route.terminal)
                 continue
             moves = route.moves_from(proven)
             held = _collision(state, route, moves, alt.see)
@@ -89,7 +93,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
 
     if collision is not None:
         return collision
-    undefined_at = tuple(sorted({k for k, v in proven.items() if v is None} | {r.terminal for r in now if r.light_class == UNDEFINED}))
+    undefined_at = tuple(sorted({k for k, v in proven.items() if v is None} | {r.terminal for r in now if r.light_class == UNDEFINED} | undefined_sources))
     have = ", ".join(sorted(available)) or "nothing"
     if not applicable:
         reason = f"no alternative of {detector}.{function} applies now (when-conditions unmet; available: {have})"
@@ -169,15 +173,14 @@ def _is_active(now: frozenset[SeesRecord], alt: GoalSpec, proven: Mapping[str, s
     return True
 
 
-def _source_emits_now(graph: OpticalGraph, state: ProvenState, route: StaticRoute, see: str) -> bool:
-    if see == DARK:
-        return True
+def _terminal_emission(graph: OpticalGraph, state: ProvenState, route: StaticRoute) -> str | None:
+    """What the route's terminal puts out *now* when it is a source (judged like a selector:
+    unusable telemetry ⇒ ``undefined``); ``None`` when the terminal is a selector, whose blocking or
+    emitting aspect the route itself sets."""
     terminal = graph.nodes[route.terminal]
     if isinstance(terminal.kind, Source):
-        telemetry = state.selectors.get(terminal.name)
-        pos = None if telemetry is None else telemetry.position
-        return terminal.kind.emission(terminal.spec, pos, state.environment) == see
-    return True  # an emitting aspect is switched on by the route itself
+        return source_emission(graph, state, terminal)
+    return None
 
 
 def _collision(state: ProvenState, route: StaticRoute, moves: Mapping[str, str], see: str) -> Collision | None:

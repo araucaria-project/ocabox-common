@@ -159,6 +159,18 @@ class TestFanInAndSources(unittest.TestCase):
         state = ProvenState.build({**self.base, "m4": "park", "m5": "thar"}, sun_alt_deg=-30)
         self.assertEqual(classes(sees(self.g, state, "beso")), {(DARK, "m4")})
 
+    def test_source_telemetry_is_judged_like_a_selector(self):
+        base = {**self.base, "m4": "calib", "m5": "thar"}
+        for bad in (ProvenState.build({**base}, stale=["thar_lamp"], sun_alt_deg=-30),
+                    ProvenState.build({**base}, moving=["thar_lamp"], sun_alt_deg=-30),
+                    ProvenState.build({**base, "thar_lamp": None}, sun_alt_deg=-30),
+                    ProvenState.build({**base, "thar_lamp": "warming"}, sun_alt_deg=-30)):
+            with self.subTest(state=bad.selectors["thar_lamp"]):
+                self.assertEqual(classes(sees(self.g, bad, "beso")), {(UNDEFINED, "thar_lamp")})
+        stale_on = ProvenState(selectors={**ProvenState.build(base).selectors, "thar_lamp": SelectorState(position="on", stale=True)},
+                               environment=ProvenState.build({}, sun_alt_deg=-30).environment)
+        self.assertEqual(classes(sees(self.g, stale_on, "beso")), {(UNDEFINED, "thar_lamp")})
+
     def test_switchable_source_proven_off_is_dark_at_the_lamp(self):
         state = ProvenState.build({**self.base, "m4": "calib", "m5": "thar", "thar_lamp": "off"}, sun_alt_deg=-30)
         self.assertEqual(classes(sees(self.g, state, "beso")), {(DARK, "thar_lamp")})

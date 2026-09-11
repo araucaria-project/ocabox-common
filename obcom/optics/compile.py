@@ -45,9 +45,12 @@ def compile_telescope(graph: OpticalGraph) -> TelescopeCompiled:
         static = enumerate_routes(graph, detector)
         for function in node.paths:
             for i, alt in enumerate(node.paths.alternatives(function)):
-                for r in routes_for_goal(static, alt):
+                # one authored alternative may be realised by several physical routes (a bare `dark`
+                # is blocked by the dome, the cover or M3): each gets its own ordinal so RouteKey is unique
+                for k, r in enumerate(routes_for_goal(static, alt)):
                     routes.append(
-                        Route(detector=detector, function=function, alternative=i, see=alt.see, positions=dict(r.positions), when=alt.when)
+                        Route(detector=detector, function=function, alternative=i, realization=k,
+                              see=alt.see, positions=dict(r.positions), when=alt.when)
                     )
     for route in routes:
         _verify(graph, route)
@@ -113,8 +116,8 @@ def _conflicts(routes: list[Route]) -> list[Conflict]:
                     conflicts.append(
                         Conflict(
                             selector=key,
-                            a=RouteKey(detector=a.detector, function=a.function, alternative=a.alternative),
-                            b=RouteKey(detector=b.detector, function=b.function, alternative=b.alternative),
+                            a=RouteKey(detector=a.detector, function=a.function, alternative=a.alternative, realization=a.realization),
+                            b=RouteKey(detector=b.detector, function=b.function, alternative=b.alternative, realization=b.realization),
                             a_requires=a.positions[key],
                             b_requires=b.positions[key],
                             reason=f"{a.detector}.{a.function} needs {key}={a.positions[key]}, {b.detector}.{b.function} needs {key}={b.positions[key]}",
@@ -145,5 +148,5 @@ def _verify(graph: OpticalGraph, route: Route) -> None:
     if not now or any(r.light_class != route.see for r in now):
         seen = ", ".join(sorted(f"{r.light_class}@{r.terminal}" for r in now)) or "nothing"
         raise CompileError(
-            f"route {route.detector}.{route.function}[{route.alternative}] with {dict(route.positions)} should show {route.see!r} but sees {seen}"
+            f"route {route.detector}.{route.function}[{route.alternative}#{route.realization}] with {dict(route.positions)} should show {route.see!r} but sees {seen}"
         )

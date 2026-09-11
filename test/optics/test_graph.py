@@ -140,7 +140,21 @@ class TestLoadTimeValidation(unittest.TestCase):
         self.assertInvalid(comps, "unknown_kind")
 
     def test_source_has_input(self):
-        self.assertInvalid(jk15(sky={"kind": "sky", "optics": {"from": {"pickoff": "third"}}}), "source_has_input", component="sky")
+        # hanging the sky on the pick-off also closes a loop: both problems are reported together
+        self.assertInvalid(jk15(sky={"kind": "sky", "optics": {"from": {"pickoff": "third"}}}), "source_has_input", "cycle", component="sky")
+
+    def test_structural_and_cycle_errors_are_reported_together(self):
+        comps = jk15(
+            derotator={"kind": "rotator", "optics": {"from": "filterwheel"}}, camera=None,  # cycle
+            guider_beso={"kind": "camera", "optics": {"from": {"tertiary": "nasmyth3"}}},  # undeclared port
+        )
+        self.assertInvalid(comps, "cycle", "undeclared_port")
+
+    def test_fan_in_cannot_take_a_multi_output_selector_without_its_port(self):
+        comps = jk15(m4={"kind": "mirror", "optics": {"inputs": {"sky": "tertiary", "calib": "flatscreen"}}},
+                     beso={"kind": "spectrograph", "optics": {"from": "m4"}})
+        exc = self.assertInvalid(comps, "port_required", component="m4")
+        self.assertIn("from: {tertiary: <symbol>}", exc.errors[0].message)
 
     def test_detector_as_upstream(self):
         self.assertInvalid(jk15(extra={"kind": "camera", "optics": {"from": "guider"}}), "detector_as_upstream")

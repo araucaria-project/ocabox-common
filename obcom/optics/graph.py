@@ -5,6 +5,10 @@ Everything a config typo can express is caught here, at load time: unknown kinds
 references to undeclared ports, two components hanging on one port without a splitter, ports on
 components that have none, cycles, ``paths`` goals no source can ever satisfy, ``via`` outside
 the detector's upstream cone. Runtime state never enters this module.
+
+Reporting: structural errors and cycles are collected together and raised at once; ``paths``
+validation needs a structurally sound, acyclic graph (it enumerates routes) and therefore runs
+only when the first pass found nothing — its errors are then reported all at once as well.
 """
 
 from __future__ import annotations
@@ -176,10 +180,8 @@ def parse_graph(
     spec = _validate_shape(components, presets)
     errors: list[ConfigError] = []
     nodes = _build_nodes(spec, registry, errors)
-    if errors:
-        raise GraphInvalid(errors)
     graph = OpticalGraph(nodes=nodes, components=spec.components, presets=spec.presets, registry=registry, telescope=telescope)
-    _check_cycles(graph, errors)
+    _check_cycles(graph, errors)  # safe on a partially valid graph: every reported problem, structural and cyclic, at once
     if errors:
         raise GraphInvalid(errors)
     _check_paths(graph, errors)
@@ -307,7 +309,10 @@ def _check_edge(edge: Edge, nodes: dict[str, Node], errors: list[ConfigError]) -
         _err(errors, "detector_as_upstream", f"{down.name}: hangs on {up.name!r}, but a detector emits no light", down.name, path)
         return
     if edge.owner == PortOwner.SELF:
-        return  # fan-in: the upstream's single output is used; its shape is checked below via passive rules
+        # fan-in takes the upstream's *single* output; a multi-output selector cannot be named without its port
+        if up.archetype == Archetype.SELECTOR and up.shape == SelectorShape.OUTPUT_PORTS:
+            _err(errors, "port_required", f"{down.name}: inputs reference {up.name!r}, which switches between output ports; hang a passive on the port (`from: {{{up.name}: <symbol>}}`) and reference that", down.name, path)
+        return
     if edge.owner == PortOwner.UPSTREAM:
         if up.archetype == Archetype.SELECTOR and up.shape == SelectorShape.OUTPUT_PORTS:
             if up.positions is None:
@@ -342,24 +347,25 @@ def _check_duplicates(edges: list[Edge], nodes: dict[str, Node], errors: list[Co
 
 
 def _check_cycles(graph: OpticalGraph, errors: list[ConfigError]) -> None:
+    """Report every cycle (one error per back edge found by the DFS), not just the first."""
     WHITE, GREY, BLACK = 0, 1, 2
     colour = {n: WHITE for n in graph.nodes}
 
-    def visit(name: str, trail: list[str]) -> bool:
+    def visit(name: str, trail: list[str]) -> None:
         colour[name] = GREY
         for e in graph.nodes[name].inputs:
+            if e.upstream not in colour:
+                continue  # dangling reference, reported structurally
             if colour[e.upstream] == GREY:
                 cycle = trail[trail.index(e.upstream):] + [e.upstream] if e.upstream in trail else [e.upstream, name, e.upstream]
                 _err(errors, "cycle", f"optical cycle: {' -> '.join(cycle)}", name)
-                return True
-            if colour[e.upstream] == WHITE and visit(e.upstream, trail + [e.upstream]):
-                return True
+            elif colour[e.upstream] == WHITE:
+                visit(e.upstream, trail + [e.upstream])
         colour[name] = BLACK
-        return False
 
     for name in graph.nodes:
-        if colour[name] == WHITE and visit(name, [name]):
-            return
+        if colour[name] == WHITE:
+            visit(name, [name])
 
 
 def _check_paths(graph: OpticalGraph, errors: list[ConfigError]) -> None:
