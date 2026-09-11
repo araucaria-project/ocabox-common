@@ -189,7 +189,7 @@ class TestLoadTimeValidation(unittest.TestCase):
         self.assertInvalid(jk15(derotator={"kind": "rotator", "optics": {"inputs": {"a": "tertiary"}}}), "inputs_on_non_selector")
 
     def test_dome_inputs_are_fixed_by_the_kind(self):
-        self.assertInvalid(jk15(dome={"kind": "dome", "optics": {"inputs": {"sky": "sky"}}}), "undeclared_position", component="dome")
+        self.assertInvalid(jk15(dome={"kind": "dome", "optics": {"inputs": {"sky": "sky"}}}), "undeclared_position", "invalid_option", component="dome")  # `sky` is no dome input, and `open` is missing
 
     def test_fan_in_input_must_be_a_declared_position(self):
         comps = dict(BESO)
@@ -251,6 +251,9 @@ class TestLoadTimeValidation(unittest.TestCase):
         self.assertInvalid(jk15(filterwheel=fw), "invalid_option", component="filterwheel")
         fw_null = {**fw, "positions": {"v": {"slot": 1}, "blank": {"slot": 2, "dark": None}}}
         self.assertInvalid(jk15(filterwheel=fw_null), "invalid_option", component="filterwheel")  # `dark: null` is not "no flag"
+        dome = jk15()["dome"]
+        self.assertInvalid(jk15(dome={**dome, "optics": {"inputs": {"flat": "flatscreen"}}}), "invalid_option", component="dome")  # no `open`: derivation would emit dark
+        self.assertInvalid(jk15(dome={**dome, "positions": {"open": {}, "flat": {}, "shut": {}}}), "invalid_option", component="dome")
         cover = {"kind": "covercalibrator", "positions": {"open": {"code": 1}, "closed": {"code": 2}}, "optics": {"from": "dome"}}
         exc = self.assertInvalid(jk15(covercalibrator=cover), "invalid_option", component="covercalibrator")
         self.assertIn("knows only open, close", exc.errors[0].message)

@@ -451,6 +451,10 @@ class DomeKind(Selector):
 
     def validate(self, spec, components):
         problems: list[str] = []
+        if self.OPEN not in self.inputs(spec):
+            problems.append(f"optics.inputs must name the {self.OPEN!r} input (the sky): a dome that is open sees something")
+        known = (self.OPEN, self.FLAT, self.CLOSED)
+        problems += [f"positions.{symbol}: a dome knows only {', '.join(known)}" for symbol in (spec.positions or ()) if symbol not in known]
         extra = spec.model_extra or {}
         _number(extra, "domeflat_az", problems)
         _number(extra, "slew_tolerance", problems, minimum=0.0)
