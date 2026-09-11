@@ -212,6 +212,14 @@ class TestLoadTimeValidation(unittest.TestCase):
         paths = {"dark": {"see": "dark", "when": "sky.eclipse"}}
         self.assertInvalid(jk15(camera={"kind": "camera", "optics": {"from": "filterwheel"}, "paths": paths}), "unknown_light_class")
 
+    def test_presets_must_name_a_detector_and_one_of_its_paths(self):
+        with self.assertRaises(GraphInvalid) as cm:
+            parse_graph(jk15(), presets={"imaging": {"camera": "object"}, "bad": {"beso": "object"}, "worse": {"camera": "spectroscopy"}})
+        self.assertEqual(codes(cm.exception), {"preset_unknown_detector", "preset_unknown_path"})
+        self.assertEqual({e.path for e in cm.exception.errors}, {"presets.bad.beso", "presets.worse.camera"})
+        g = parse_graph(jk15(), presets={"imaging": {"camera": "object"}, "calibration": {"camera": "dark"}})
+        self.assertEqual(set(g.presets), {"imaging", "calibration"})
+
     def test_grammar_errors_are_reported_with_location(self):
         exc = self.assertInvalid(jk15(camera={"kind": "camera", "optics": {"from": ["a", "b"]}}), "grammar", component="camera")
         self.assertTrue(exc.errors[0].path.startswith("components.camera.optics"))

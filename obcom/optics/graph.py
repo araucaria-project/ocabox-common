@@ -185,6 +185,7 @@ def parse_graph(
     if errors:
         raise GraphInvalid(errors)
     _check_paths(graph, errors)
+    _check_presets(graph, errors)
     if errors:
         raise GraphInvalid(errors)
     return graph
@@ -366,6 +367,20 @@ def _check_cycles(graph: OpticalGraph, errors: list[ConfigError]) -> None:
     for name in graph.nodes:
         if colour[name] == WHITE:
             visit(name, [name])
+
+
+def _check_presets(graph: OpticalGraph, errors: list[ConfigError]) -> None:
+    """``presets: {name: {detector: function}}`` is sugar over declared paths: every entry must name
+    a detector of this graph and one of its declared functions (a shape-only concern in datamodels)."""
+    for preset, entries in graph.presets.items():
+        for detector, function in entries.items():
+            where = f"presets.{preset}.{detector}"
+            node = graph.nodes.get(detector)
+            if node is None or node.archetype != Archetype.DETECTOR:
+                _err(errors, "preset_unknown_detector", f"{where}: {detector!r} is not a detector of this telescope", None, where)
+            elif node.paths is None or function not in node.paths:
+                declared = ", ".join(sorted(node.paths)) if node.paths is not None else "none"
+                _err(errors, "preset_unknown_path", f"{where}: {detector!r} declares no path {function!r} (declared: {declared})", detector, where)
 
 
 def _check_paths(graph: OpticalGraph, errors: list[ConfigError]) -> None:
