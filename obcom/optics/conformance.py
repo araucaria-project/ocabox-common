@@ -216,25 +216,25 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         "beso ThAr arc",
         "M4 on calib, M5 on thar: the spectrograph sees the ThAr lamp; the imaging camera on the other M3 port sees dark @ tertiary.",
-        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "calib", "m5": "thar", "thar_lamp": "on"}, sun_alt_deg=-30.0),
+        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "calib", "m5": "thar", "thar_lamp": "on"}, sun_alt_deg=-30.0),
         ("beso", "camera"), (("beso", "arc"), ("beso", "flat"), ("beso", "object"), ("camera", "dark")),
     ),
     Scenario(
         "beso on sky",
         "M4 on sky through the fibre: the spectrograph sees sky.science through tertiary and fibre.",
-        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "sky", "m5": "thar", "thar_lamp": "on"}, sun_alt_deg=-30.0),
+        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "sky", "m5": "thar", "thar_lamp": "on"}, sun_alt_deg=-30.0),
         ("beso",), (("beso", "object"), ("beso", "arc")),
     ),
     Scenario(
         "beso M4 parked",
         "A declared position that is no input transmits nothing: dark @ m4.",
-        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "park", "m5": "thar", "thar_lamp": "on"}, sun_alt_deg=-30.0),
+        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "park", "m5": "thar", "thar_lamp": "on"}, sun_alt_deg=-30.0),
         ("beso",), (("beso", "dark"), ("beso", "object")),
     ),
     Scenario(
         "beso lamp proven off",
         "A switchable source proven off is a dark terminal itself.",
-        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "calib", "m5": "thar", "thar_lamp": "off"}, sun_alt_deg=-30.0),
+        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "calib", "m5": "thar", "thar_lamp": "off"}, sun_alt_deg=-30.0),
         ("beso",), (("beso", "arc"),),
     ),
     Scenario(

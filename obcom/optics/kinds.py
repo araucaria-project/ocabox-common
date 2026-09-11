@@ -349,7 +349,7 @@ class Selector(Kind):
         elif self.gate:
             through = set() if self.blocks(spec, position) else {Transmit(IN)}
         else:
-            return {port: frozenset({Transmit(IN)}) if port == position else DARK_OUT for port in outputs}
+            return {port: frozenset(({Transmit(IN)} if port == position else set()) | own) or DARK_OUT for port in outputs}
         return {OUT: frozenset(through | own) or DARK_OUT}
 
 

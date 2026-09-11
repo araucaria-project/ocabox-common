@@ -93,8 +93,14 @@ class TestCompile(unittest.TestCase):
         g = parse_graph(jk15())
         bogus = Route(detector="camera", function="object", alternative=0, see="sky.science", positions={"tertiary": "beso", "covercalibrator": "open", "dome": "open"})
         with self.assertRaises(CompileError) as cm:
-            _verify(g, bogus)
+            _verify(g, bogus, "sky")
         self.assertIn("dark@tertiary", str(cm.exception))
+
+    def test_routes_to_stateful_sources_verify_with_the_source_precondition(self):
+        compiled = compile_telescope(parse_graph(BESO))  # arc and flat terminate at switchable lamps, object at the sky
+        self.assertEqual({(r.function, r.see) for r in compiled.routes if r.detector == "beso"} >= {("arc", "lamp"), ("flat", "lamp"), ("object", "sky.science")}, True)
+        arc = next(r for r in compiled.routes if (r.detector, r.function) == ("beso", "arc"))
+        self.assertNotIn("thar_lamp", arc.positions)  # the lamp's power is not a route position: the sequence lights it
 
     def test_no_selectors_compiles_to_routes_without_positions(self):
         compiled = compile_telescope(parse_graph(TMMT))

@@ -2,7 +2,7 @@ import unittest
 
 from datamodels.optics import DARK, UNDEFINED, SeesRecord, SelectorState
 
-from obcom.optics import ProvenState, available_classes, parse_graph, proven_position, sees
+from obcom.optics import DEFAULT_REGISTRY, Aspect, ProvenState, Selector, available_classes, parse_graph, proven_position, sees
 from test.optics.fixtures import BESO, JK15_WITH_MOUNT, TMMT, jk15, night
 
 
@@ -114,6 +114,24 @@ MULTIPORT = {
     "wide": {"kind": "camera", "optics": {"from": {"m3": ["a", "b"]}}, "paths": {"object": "sky.science", "dark": "dark"}},
     "narrow": {"kind": "camera", "optics": {"from": {"m3": "c"}}, "paths": {"object": "sky.science"}},
 }
+
+
+class TestAspectOnOutputPortSelector(unittest.TestCase):
+    """An injected M3 with its own calibrator lamp: the aspect emits on the selected port whatever the position."""
+
+    def setUp(self):
+        reg = DEFAULT_REGISTRY.copy()
+        reg.register(Selector(name="tertiaryOCA", aspects=(Aspect(name="calibrator", emits="lamp"),)), "tertiary")
+        self.g = parse_graph(jk15(), registry=reg)
+
+    def test_proven_lamp_reaches_the_selected_output(self):
+        self.assertEqual(classes(sees(self.g, night(**{"tertiary.calibrator": "on"}), "camera")), {("sky.science", "sky"), ("lamp", "tertiary")})
+        self.assertEqual(classes(sees(self.g, night(**{"tertiary.calibrator": "off"}), "camera")), {("sky.science", "sky")})
+
+    def test_unreported_lamp_is_undefined_on_every_output(self):
+        self.assertEqual(classes(sees(self.g, night(), "camera")), {("sky.science", "sky"), (UNDEFINED, "tertiary")})
+        # the unselected port: the back of M3 would be dark, but with the lamp unknown nothing is certain
+        self.assertEqual(classes(sees(self.g, night(), "guider_beso")), {(UNDEFINED, "tertiary")})
 
 
 class TestMultiPortEdge(unittest.TestCase):

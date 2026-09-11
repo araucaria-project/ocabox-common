@@ -10,23 +10,13 @@ from __future__ import annotations
 import hashlib
 import json
 from importlib.metadata import PackageNotFoundError, version
+from itertools import product
 from typing import Mapping
 
-from datamodels.optics import (
-    Conflict,
-    OpticsCompiled,
-    Route,
-    RouteKey,
-    SkyState,
-    SourceFamily,
-    TelescopeCompiled,
-    TelescopeOpticsSpec,
-    light_family,
-    light_state,
-)
+from datamodels.optics import Conflict, OpticsCompiled, Route, RouteKey, TelescopeCompiled, TelescopeOpticsSpec, state_key
 
 from obcom.optics.graph import OpticalGraph, parse_graph
-from obcom.optics.kinds import DEFAULT_REGISTRY, KindRegistry, SkySource
+from obcom.optics.kinds import DEFAULT_REGISTRY, OUT, Emit, KindRegistry, Source
 from obcom.optics.routes import enumerate_routes, routes_for_goal
 from obcom.optics.sees import sees
 from obcom.optics.state import ProvenState
@@ -37,7 +27,7 @@ class CompileError(RuntimeError):
 
 
 def compile_telescope(graph: OpticalGraph) -> TelescopeCompiled:
-    routes: list[Route] = []
+    routes: list[tuple[Route, str]] = []  #: (route, its terminal component)
     for detector in graph.detectors:
         node = graph.nodes[detector]
         if node.paths is None:
@@ -48,17 +38,16 @@ def compile_telescope(graph: OpticalGraph) -> TelescopeCompiled:
                 # one authored alternative may be realised by several physical routes (a bare `dark`
                 # is blocked by the dome, the cover or M3): each gets its own ordinal so RouteKey is unique
                 for k, r in enumerate(routes_for_goal(static, alt)):
-                    routes.append(
-                        Route(detector=detector, function=function, alternative=i, realization=k,
-                              see=alt.see, positions=dict(r.positions), when=alt.when)
-                    )
-    for route in routes:
-        _verify(graph, route)
+                    route = Route(detector=detector, function=function, alternative=i, realization=k,
+                                  see=alt.see, positions=dict(r.positions), when=alt.when)
+                    routes.append((route, r.terminal))
+    for route, terminal in routes:
+        _verify(graph, route, terminal)
     return TelescopeCompiled(
         selectors=list(graph.selectors),
         detectors=list(graph.detectors),
-        routes=routes,
-        conflicts=_conflicts(routes),
+        routes=[route for route, _ in routes],
+        conflicts=_conflicts([route for route, _ in routes]),
     )
 
 
@@ -126,24 +115,21 @@ def _conflicts(routes: list[Route]) -> list[Conflict]:
     return conflicts
 
 
-def _sun_alt_for(graph: OpticalGraph, sky_class: str) -> float:
-    """A sun altitude that makes the telescope's sky emit ``sky_class`` (thresholds of its sky kind)."""
-    sky = next((n for n in graph.nodes.values() if isinstance(n.kind, SkySource)), None)
-    science, (flat_lo, flat_hi) = (-18.0, (-15.0, 1.0)) if sky is None else sky.kind.thresholds(sky.spec)
-    state = light_state(sky_class)
-    if state == SkyState.SCIENCE:
-        return science - 10.0
-    if state == SkyState.TWILIGHT:
-        return (science + flat_lo) / 2.0
-    if state == SkyState.FLAT:
-        return (flat_lo + flat_hi) / 2.0
-    return flat_hi + 10.0
+def _source_precondition(graph: OpticalGraph, terminal: str, see: str) -> dict[str, str]:
+    """Telemetry that makes ``terminal`` emit ``see`` when it is a source with state axes (the
+    sky at ``science``, a lamp ``on``); a route's positions only cover the selectors it sets."""
+    node = graph.nodes[terminal]
+    if not isinstance(node.kind, Source) or not node.axes:
+        return {}
+    for combo in product(*(a.vocabulary for a in node.axes)):
+        values = dict(zip((a.name for a in node.axes), combo))
+        if node.table(values)[OUT] == frozenset({Emit(see)}):
+            return {state_key(terminal, axis): value for axis, value in values.items()}
+    raise CompileError(f"{terminal} has no state that emits {see!r}")
 
 
-def _verify(graph: OpticalGraph, route: Route) -> None:
-    state = ProvenState.build(dict(route.positions))
-    if light_family(route.see) == SourceFamily.SKY:
-        state = state.with_environment(sun_alt_deg=_sun_alt_for(graph, route.see))
+def _verify(graph: OpticalGraph, route: Route, terminal: str) -> None:
+    state = ProvenState.build({**route.positions, **_source_precondition(graph, terminal, route.see)})
     now = sees(graph, state, route.detector)
     if not now or any(r.light_class != route.see for r in now):
         seen = ", ".join(sorted(f"{r.light_class}@{r.terminal}" for r in now)) or "nothing"
