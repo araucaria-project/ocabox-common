@@ -192,7 +192,7 @@ class ConstantSource(Source):
         return (Axis(None, ("off", "on"), actuated=False),) if self.switchable else ()
 
     def possible_classes(self, spec):
-        return frozenset({self.emits})
+        return frozenset({self.emits, DARK}) if self.switchable else frozenset({self.emits})  # a lamp proven off is a dark terminal
 
     def emission(self, spec, values):
         if not self.switchable:
@@ -251,8 +251,8 @@ class SkySource(Source):
         flat = extra.get("flat_sun_alt")
         lo = hi = None
         if flat is not None:
-            if not isinstance(flat, (list, tuple)) or len(flat) != 2 or any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in flat):
-                problems.append(f"flat_sun_alt must be [min, max] in degrees, got {flat!r}")
+            if not isinstance(flat, (list, tuple)) or len(flat) != 2 or any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in flat):
+                problems.append(f"flat_sun_alt must be [min, max] finite degrees, got {flat!r}")
             else:
                 lo, hi = float(flat[0]), float(flat[1])
         if problems:

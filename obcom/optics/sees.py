@@ -76,7 +76,7 @@ def _from(graph: OpticalGraph, state: ProvenState, node: Node, ports: frozenset[
     result: set[SeesRecord] = set()
     for signal in outgoing(node, axis_values(graph, state, node), ports):
         if isinstance(signal, Emit):
-            result.add(SeesRecord(light_class=signal.light, terminal=node.name))
+            result.add(SeesRecord(light_class=signal.light, terminal=node.name, via=()))
         else:
             assert isinstance(signal, Transmit)
             result |= _through(_arriving(graph, state, node, signal.port, memo), node.name)

@@ -441,7 +441,7 @@ def _check_presets(graph: OpticalGraph, errors: list[ConfigError]) -> None:
 def _check_paths(graph: OpticalGraph, errors: list[ConfigError]) -> None:
     from obcom.optics.routes import enumerate_routes, routes_for_goal
 
-    all_classes = graph.possible_classes(graph.nodes) | {DARK}
+    light_classes = graph.possible_classes(graph.nodes) - {DARK, UNDEFINED}  # what `when:` is judged against: light, never dark
     for node in graph.nodes.values():
         if node.paths is None:
             continue
@@ -458,8 +458,8 @@ def _check_paths(graph: OpticalGraph, errors: list[ConfigError]) -> None:
                 if alt.see not in cone_classes:
                     _err(errors, "unsatisfiable_path", f"{where}: nothing upstream of {node.name} can emit {alt.see!r}", node.name, where)
                     ok = False
-                if alt.when is not None and alt.when not in all_classes:
-                    _err(errors, "unknown_light_class", f"{where}: `when: {alt.when}` names a class no source of this telescope emits", node.name, where)
+                if alt.when is not None and alt.when not in light_classes:
+                    _err(errors, "unknown_light_class", f"{where}: `when: {alt.when}` names no light any source of this telescope emits (dark is not light)", node.name, where)
                 for key, symbol in alt.via.items():
                     component, aspect = split_state_key(key)
                     if component not in cone or graph.nodes[component].archetype != Archetype.SELECTOR:

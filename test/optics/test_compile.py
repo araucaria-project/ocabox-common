@@ -105,6 +105,14 @@ class TestCompile(unittest.TestCase):
             _verify(g, cover_lamp, "flatscreen")  # right class, wrong provenance
         self.assertIn("'lamp'@flatscreen but sees lamp@covercalibrator", str(cm.exception))
 
+    def test_a_lamp_proven_off_is_a_dark_route_of_its_own(self):
+        g = parse_graph(BESO)
+        lamp_dark = [r for r in enumerate_routes(g, "beso") if r.terminal == "thar_lamp"]
+        self.assertEqual(len(lamp_dark), 1)
+        self.assertEqual(lamp_dark[0].classes, frozenset({"lamp", "dark"}))
+        dark_routes = [r for r in compile_telescope(g).routes if (r.detector, r.function) == ("beso", "dark")]
+        self.assertTrue(any(r.positions.get("m5") == "thar" and r.positions.get("m4") == "calib" for r in dark_routes))  # verified with the lamp off
+
     def test_routes_to_stateful_sources_verify_with_the_source_precondition(self):
         compiled = compile_telescope(parse_graph(BESO))  # arc and flat terminate at switchable lamps, object at the sky
         self.assertEqual({(r.function, r.see) for r in compiled.routes if r.detector == "beso"} >= {("arc", "lamp"), ("flat", "lamp"), ("object", "sky.science")}, True)
