@@ -117,21 +117,33 @@ def _conflicts(routes: list[Route]) -> list[Conflict]:
     return conflicts
 
 
-def _source_precondition(graph: OpticalGraph, terminal: str, see: str) -> dict[str, str]:
-    """Telemetry that makes ``terminal`` emit ``see`` when it is a source with state axes (the
-    sky at ``science``, a lamp ``on``); a route's positions only cover the selectors it sets."""
+def _source_precondition(graph: OpticalGraph, terminal: str, see: str) -> tuple[dict[str, str], dict[str, object]]:
+    """(telemetry, environment) under which ``terminal`` emits ``see`` when it is a source with state
+    axes: a lamp ``on`` is telemetry, the sky at ``science`` is a sun altitude (the axis is
+    environment-only). A route's positions only cover the selectors it sets."""
     node = graph.nodes[terminal]
     if not isinstance(node.kind, Source) or not node.axes:
-        return {}
+        return {}, {}
     for combo in product(*(a.vocabulary for a in node.axes)):
-        values = dict(zip((a.name for a in node.axes), combo))
-        if node.table(values)[OUT] == frozenset({Emit(see)}):
-            return {state_key(terminal, axis): value for axis, value in values.items()}
+        values = dict(zip(node.axes, combo))
+        if node.table({a.name: v for a, v in values.items()})[OUT] != frozenset({Emit(see)}):
+            continue
+        telemetry: dict[str, str] = {}
+        environment: dict[str, object] = {}
+        for axis, value in values.items():
+            if axis.reported:
+                telemetry[state_key(terminal, axis.name)] = value
+            elif axis.exemplify is not None:
+                environment |= axis.exemplify(node.spec, graph.components, value)
+            else:
+                raise CompileError(f"{terminal}: axis {axis.name or 'position'} is neither reported nor exemplifiable — route to {see!r} cannot be verified")
+        return telemetry, environment
     raise CompileError(f"{terminal} has no state that emits {see!r}")
 
 
 def _verify(graph: OpticalGraph, route: Route, terminal: str) -> None:
-    state = ProvenState.build({**route.positions, **_source_precondition(graph, terminal, route.see)})
+    telemetry, environment = _source_precondition(graph, terminal, route.see)
+    state = ProvenState.build({**route.positions, **telemetry}, **environment)
     now = sees(graph, state, route.detector)
     if len(now) != 1 or next(iter(now)).light_class != route.see or next(iter(now)).terminal != terminal:
         seen = ", ".join(sorted(f"{r.light_class}@{r.terminal}" for r in now)) or "nothing"

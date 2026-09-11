@@ -54,7 +54,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
     alternatives = node.paths.alternatives(function)
     proven = _proven_map(graph, state, _keys(routes, alternatives))
     others = tuple(d for d in graph.detectors if d != detector)
-    others_now = {d: frozenset(r.light_class for r in sees(graph, state, d)) for d in others}
+    others_now = {d: sees(graph, state, d) for d in others}
 
     unavailable: str | None = None
     not_emitting: set[str] = set()
@@ -141,14 +141,11 @@ def _proven_map(graph: OpticalGraph, state: ProvenState, keys: Iterable[str]) ->
     return result
 
 
-def _collateral(graph: OpticalGraph, state: ProvenState, others_now: Mapping[str, frozenset[str]], route: StaticRoute) -> int:
-    """How many other detectors would see different light classes after setting ``route``."""
+def _collateral(graph: OpticalGraph, state: ProvenState, others_now: Mapping[str, frozenset[SeesRecord]], route: StaticRoute) -> int:
+    """How many other detectors would see something else after setting ``route`` — whole records,
+    so a changed terminal or a second same-class lamp counts as a change."""
     after = state.with_positions(dict(route.positions))
-    changed = 0
-    for detector, before in others_now.items():
-        if frozenset(r.light_class for r in sees(graph, after, detector)) != before:
-            changed += 1
-    return changed
+    return sum(1 for detector, before in others_now.items() if sees(graph, after, detector) != before)
 
 
 def _is_active(now: frozenset[SeesRecord], alt: GoalSpec, proven: Mapping[str, str | None]) -> bool:

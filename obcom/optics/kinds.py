@@ -61,6 +61,8 @@ def is_dark(signal: Signal) -> bool:
 # --- axes --------------------------------------------------------------------------------------
 
 Deriver = Callable[[OpticalComponentSpec, Mapping[str, OpticalComponentSpec], Environment], "str | None"]
+#: The inverse of a deriver for verification: environment fields under which ``derive`` yields the value.
+Exemplifier = Callable[[OpticalComponentSpec, Mapping[str, OpticalComponentSpec], str], dict[str, object]]
 
 
 @dataclass(frozen=True)
@@ -70,12 +72,17 @@ class Axis:
 
     ``vocabulary`` — the legal symbols in authored order (routes enumerate and tie-break in this
     order). ``derive`` — computes the value from the environment when no telemetry names it (the
-    dome). ``actuated`` axes appear in routes as positions to set; the sun is not actuated. An
-    axis with neither telemetry nor derivation is undefined — never assumed."""
+    dome). ``reported`` — the axis takes telemetry under its state key; an environment-only axis
+    (the sky's sun state) cannot be overridden by a stray ``sky: science`` and instead offers
+    ``exemplify``, an environment that derives a wanted value (how ``compile`` verifies a sky route).
+    ``actuated`` axes appear in routes as positions to set; the sun is not actuated. An axis with
+    neither telemetry nor derivation is undefined — never assumed."""
 
     name: str | None
     vocabulary: tuple[str, ...]
     derive: Deriver | None = None
+    reported: bool = True
+    exemplify: Exemplifier | None = None
     actuated: bool = True
 
 
@@ -221,11 +228,22 @@ class SkySource(Source):
     flat_sun_alt: tuple[float, float] = (-15.0, 1.0)
 
     def axes(self, spec):
-        return (Axis(None, tuple(str(s) for s in SkyState), derive=self._sun_state, actuated=False),)
+        return (Axis(None, tuple(str(s) for s in SkyState), derive=self._sun_state, reported=False, exemplify=self._sun_for, actuated=False),)
 
     def _sun_state(self, spec, components, env: Environment) -> str | None:
         state = self.sky_state(spec, env.sun_alt_deg)
         return None if state is None else str(state)
+
+    def _sun_for(self, spec, components, state: str) -> dict[str, object]:
+        """A sun altitude at which this sky is in ``state`` (mid-band, or 10° beyond the outer bounds)."""
+        science, (flat_lo, flat_hi) = self.thresholds(spec)
+        altitude = {
+            str(SkyState.SCIENCE): science - 10.0,
+            str(SkyState.TWILIGHT): (science + flat_lo) / 2.0,
+            str(SkyState.FLAT): (flat_lo + flat_hi) / 2.0,
+            str(SkyState.DAY): flat_hi + 10.0,
+        }[state]
+        return {"sun_alt_deg": altitude}
 
     def possible_classes(self, spec):
         return frozenset(f"{SourceFamily.SKY}.{s}" for s in SkyState)

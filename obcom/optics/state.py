@@ -75,11 +75,11 @@ class Resolved:
 
 
 def resolve_axes(graph: OpticalGraph, state: ProvenState, node: Node) -> dict[str | None, Resolved]:
-    """Every axis of ``node`` resolved against the proven state: telemetry wins (unusable ⇒
-    undefined), then derivation from the environment, else undefined."""
+    """Every axis of ``node`` resolved against the proven state: telemetry wins on a reported axis
+    (unusable ⇒ undefined), then derivation from the environment, else undefined."""
     result: dict[str | None, Resolved] = {}
     for axis in node.axes:
-        telemetry = state.selectors.get(state_key(node.name, axis.name))
+        telemetry = state.selectors.get(state_key(node.name, axis.name)) if axis.reported else None
         if telemetry is not None:
             usable = not (telemetry.stale or telemetry.moving or telemetry.position is None) and telemetry.position in axis.vocabulary
             result[axis.name] = Resolved(telemetry.position, "telemetry") if usable else Resolved(None, "undefined")

@@ -3,7 +3,7 @@ import unittest
 from datamodels.optics import DARK, UNDEFINED, SeesRecord, SelectorState
 
 from obcom.optics import DEFAULT_REGISTRY, Aspect, ProvenState, Selector, available_classes, parse_graph, proven_position, sees
-from test.optics.fixtures import BESO, JK15_WITH_MOUNT, TMMT, jk15, night
+from test.optics.fixtures import BESO, JK15_WITH_MOUNT, NIGHT, TMMT, jk15, night
 
 
 def classes(records) -> set[tuple[str, str]]:
@@ -132,6 +132,16 @@ class TestAspectOnOutputPortSelector(unittest.TestCase):
         self.assertEqual(classes(sees(self.g, night(), "camera")), {("sky.science", "sky"), (UNDEFINED, "tertiary")})
         # the unselected port: the back of M3 would be dark, but with the lamp unknown nothing is certain
         self.assertEqual(classes(sees(self.g, night(), "guider_beso")), {(UNDEFINED, "tertiary")})
+
+
+class TestEnvironmentOnlyAxes(unittest.TestCase):
+
+    def test_sky_telemetry_cannot_override_the_sun(self):
+        g = parse_graph(jk15())
+        by_day = ProvenState.build({**NIGHT, "sky": "science"}, sun_alt_deg=20, dome_shutter_open=True)
+        self.assertEqual(classes(sees(g, by_day, "camera")), {("sky.day", "sky")})
+        no_sun = ProvenState.build({**NIGHT, "sky": "science"})
+        self.assertEqual(classes(sees(g, no_sun, "camera")), {(UNDEFINED, "sky")})
 
 
 class TestDeclaredSplitterPorts(unittest.TestCase):
