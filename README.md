@@ -12,8 +12,7 @@ conformance vectors). Pure functions over `(graph, proven state)`, no I/O:
 from obcom.optics import parse_graph, ProvenState, sees, check, resolve, compile_telescope
 
 graph = parse_graph(components)                       # a telescope's `components:` block; GraphInvalid lists every reason
-state = ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off"},
-                          sun_alt_deg=-30, dome_shutter_open=True)
+state = ProvenState.build({"dome": "open", "tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off"}, sun_alt_deg=-30)
 sees(graph, state, "camera")                          # frozenset({SeesRecord(light_class='sky.science', terminal='sky', via=('dome', 'covercalibrator', 'tertiary', 'derotator', 'pickoff', 'filterwheel'))})
 check(graph, state, "camera", "dark")                 # Active | Settable(moves=...) | Collision | Impossible
 resolve(graph, state, "camera", "object")             # {selector: symbol} or None

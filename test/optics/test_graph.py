@@ -1,6 +1,6 @@
 import unittest
 
-from datamodels.optics import Archetype, Invalid
+from datamodels.optics import Archetype, Invalid, TelescopeOpticsSpec
 
 from obcom.optics import (
     enumerate_routes,
@@ -230,6 +230,15 @@ class TestLoadTimeValidation(unittest.TestCase):
         self.assertInvalid(jk15(sky={"kind": "sky", "science_sun_alt": -5.0}), "invalid_option", component="sky")  # above the flat range
         self.assertInvalid(jk15(dome={**jk15()["dome"], "slew_tolerance": "3"}), "invalid_option", component="dome")
         self.assertInvalid(jk15(dome={**jk15()["dome"], "slew_tolerance": -1}), "invalid_option", component="dome")
+        self.assertInvalid(jk15(dome={**jk15()["dome"], "slew_tolerance": float("nan")}), "invalid_option", component="dome")
+        fw = {"kind": "filterwheel", "positions": {"v": {"slot": 1}, "blank": {"slot": 2, "dark": "false"}}, "optics": {"from": {"pickoff": "main"}}}
+        self.assertInvalid(jk15(filterwheel=fw), "invalid_option", component="filterwheel")
+
+    def test_presets_come_in_one_form_only(self):
+        spec = TelescopeOpticsSpec.model_validate({"components": jk15(), "presets": {"imaging": {"camera": "object"}}})
+        self.assertEqual(set(parse_graph(spec).presets), {"imaging"})
+        with self.assertRaises(ValueError):
+            parse_graph(spec, presets={"calibration": {"camera": "dark"}})
         self.assertInvalid(jk15(mount={"kind": "telescope", "domeflat_alt": True}), "invalid_option", component="dome")
         parse_graph(jk15(sky={"kind": "sky", "science_sun_alt": -12, "flat_sun_alt": [-10, 2]}))
 

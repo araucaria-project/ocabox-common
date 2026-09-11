@@ -37,15 +37,16 @@ from datamodels.optics import (
 from pydantic import ValidationError
 
 from obcom.optics.kinds import (
-    DEFAULT_REGISTRY,
-    IN,
-    OUT,
     Aspect,
     Axis,
     AxisValues,
+    DEFAULT_REGISTRY,
     Emit,
+    IN,
     Kind,
     KindRegistry,
+    OUT,
+    position_flag_problems,
     Selector,
     SelectorShape,
     Signals,
@@ -251,6 +252,8 @@ def parse_graph(
 
 def _validate_shape(components, presets) -> TelescopeOpticsSpec:
     if isinstance(components, TelescopeOpticsSpec):
+        if presets is not None:
+            raise ValueError("presets travel inside a TelescopeOpticsSpec; pass either the spec or (components, presets)")
         return components
     raw_components = {
         name: (c.model_dump(by_alias=True, exclude_none=True) if isinstance(c, OpticalComponentSpec) else c)
@@ -342,7 +345,7 @@ def _build_nodes(spec: TelescopeOpticsSpec, registry: KindRegistry, errors: list
                         _err(errors, "undeclared_position", f"{name}: kind {comp.kind!r} selects between {sorted(kind.fan_in_positions)}, not {pos!r}", name, f"{name}.optics.inputs.{pos}")
                     elif comp.positions is not None and pos not in comp.positions:
                         _err(errors, "undeclared_position", f"{name}: input position {pos!r} is not among its declared positions", name, f"{name}.optics.inputs.{pos}")
-        for problem in kind.validate(comp, components):
+        for problem in (*kind.validate(comp, components), *position_flag_problems(comp)):
             _err(errors, "invalid_option", f"{name}: {problem}", name, name)
         nodes[name] = Node(name=name, kind=kind, spec=comp, feeds={port: tuple(fs) for port, fs in feeds.items()})
 

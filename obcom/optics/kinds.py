@@ -19,6 +19,7 @@ default registry knows the kinds that exist at OCM today.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, ClassVar, Mapping
@@ -98,13 +99,30 @@ def _number(extra: Mapping, key: str, problems: list[str], *, minimum: float | N
     value = extra.get(key)
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        problems.append(f"{key} must be a number, got {value!r}")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        problems.append(f"{key} must be a finite number, got {value!r}")
         return None
     if minimum is not None and value < minimum:
         problems.append(f"{key} must be >= {minimum:g}, got {value!r}")
         return None
     return float(value)
+
+
+def is_dark_position(spec: OpticalComponentSpec, symbol: str) -> bool:
+    """The authored ``dark: true`` flag of a position — the literal Boolean, nothing truthy."""
+    return spec.positions is not None and symbol in spec.positions and (spec.positions[symbol].model_extra or {}).get("dark") is True
+
+
+def position_flag_problems(spec: OpticalComponentSpec) -> list[str]:
+    """Position extras are open for the drivers, but ``dark`` is ours: anything but a Boolean is an
+    ``invalid_option`` (quoted YAML ``dark: "false"`` would otherwise block a transmitting position)."""
+    if spec.positions is None:
+        return []
+    return [
+        f"positions.{symbol}.dark must be true or false, got {flag!r}"
+        for symbol in spec.positions
+        if (flag := (spec.positions[symbol].model_extra or {}).get("dark")) is not None and not isinstance(flag, bool)
+    ]
 
 
 @dataclass(frozen=True)
@@ -312,9 +330,7 @@ class Selector(Kind):
     def blocks(self, spec: OpticalComponentSpec, position: str) -> bool:
         if position in self.dark_positions:
             return True
-        if spec.positions is not None and position in spec.positions:
-            return bool((spec.positions[position].model_extra or {}).get("dark", False))
-        return False
+        return is_dark_position(spec, position)
 
     def inputs(self, spec):
         return frozenset(spec.optics.inputs or {}) if self.is_fan_in(spec) else frozenset({IN})
@@ -441,7 +457,7 @@ class Passive(Kind):
     def promoted(self, spec: OpticalComponentSpec) -> Selector | None:
         if not self.promotable or spec.positions is None:
             return None
-        dark = frozenset(sym for sym in spec.positions if bool((spec.positions[sym].model_extra or {}).get("dark", False)))
+        dark = frozenset(sym for sym in spec.positions if is_dark_position(spec, sym))
         if not dark:
             return None
         return Selector(name=self.name, gate=True, dark_positions=dark)
