@@ -125,9 +125,9 @@ def position_flag_problems(spec: OpticalComponentSpec) -> list[str]:
     if spec.positions is None:
         return []
     return [
-        f"positions.{symbol}.dark must be true or false, got {flag!r}"
+        f"positions.{symbol}.dark must be true or false, got {extra['dark']!r}"
         for symbol in spec.positions
-        if (flag := (spec.positions[symbol].model_extra or {}).get("dark")) is not None and not isinstance(flag, bool)
+        if "dark" in (extra := spec.positions[symbol].model_extra or {}) and not isinstance(extra["dark"], bool)
     ]
 
 
@@ -356,6 +356,14 @@ class Selector(Kind):
         if position in self.dark_positions:
             return True
         return is_dark_position(spec, position)
+
+    def validate(self, spec, components):
+        """A gate whose vocabulary is intrinsic (the cover: open/close) accepts ``positions:`` only for
+        hardware mapping of those symbols — a typo such as ``closed`` must not become a transmitting position."""
+        if not (self.gate and self.intrinsic_positions) or spec.positions is None:
+            return []
+        known = ", ".join(self.intrinsic_positions)
+        return [f"positions.{symbol}: kind {self.name!r} knows only {known}" for symbol in spec.positions if symbol not in self.intrinsic_positions]
 
     def inputs(self, spec):
         return frozenset(spec.optics.inputs or {}) if self.is_fan_in(spec) else frozenset({IN})

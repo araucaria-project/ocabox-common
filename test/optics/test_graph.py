@@ -249,6 +249,11 @@ class TestLoadTimeValidation(unittest.TestCase):
         self.assertInvalid(jk15(dome={**jk15()["dome"], "slew_tolerance": float("nan")}), "invalid_option", component="dome")
         fw = {"kind": "filterwheel", "positions": {"v": {"slot": 1}, "blank": {"slot": 2, "dark": "false"}}, "optics": {"from": {"pickoff": "main"}}}
         self.assertInvalid(jk15(filterwheel=fw), "invalid_option", component="filterwheel")
+        fw_null = {**fw, "positions": {"v": {"slot": 1}, "blank": {"slot": 2, "dark": None}}}
+        self.assertInvalid(jk15(filterwheel=fw_null), "invalid_option", component="filterwheel")  # `dark: null` is not "no flag"
+        cover = {"kind": "covercalibrator", "positions": {"open": {"code": 1}, "closed": {"code": 2}}, "optics": {"from": "dome"}}
+        exc = self.assertInvalid(jk15(covercalibrator=cover), "invalid_option", component="covercalibrator")
+        self.assertIn("knows only open, close", exc.errors[0].message)
 
     def test_presets_come_in_one_form_only(self):
         spec = TelescopeOpticsSpec.model_validate({"components": jk15(), "presets": {"imaging": {"camera": "object"}}})
