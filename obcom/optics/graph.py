@@ -202,11 +202,12 @@ class OpticalGraph:
         classes excluded)."""
         node = self.nodes[name]
         if isinstance(node.kind, Source):
-            return node.kind.possible_classes(node.spec)
-        classes: set[str] = set()
-        for values in node.assignments():
-            for signals in node.table(values).values():
-                classes |= {s.light for s in signals if isinstance(s, Emit)}
+            classes = set(node.kind.possible_classes(node.spec))  # sources: every state, not only the actuated rows
+        else:
+            classes = set()
+            for values in node.assignments():
+                for signals in node.table(values).values():
+                    classes |= {s.light for s in signals if isinstance(s, Emit)}
         return frozenset(classes - {DARK, UNDEFINED})
 
     def possible_classes(self, names: Iterable[str]) -> frozenset[str]:
@@ -442,7 +443,7 @@ def _check_presets(graph: OpticalGraph, errors: list[ConfigError]) -> None:
 def _check_paths(graph: OpticalGraph, errors: list[ConfigError]) -> None:
     from obcom.optics.routes import enumerate_routes, routes_for_goal
 
-    light_classes = graph.possible_classes(graph.nodes) - {DARK, UNDEFINED}  # what `when:` is judged against: light, never dark
+    light_classes = graph.possible_classes(graph.nodes)  # what `when:` is judged against: light, never dark
     for node in graph.nodes.values():
         if node.paths is None:
             continue

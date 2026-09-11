@@ -116,6 +116,14 @@ class TestLoadTimeValidation(unittest.TestCase):
         comps = jk15(guider={"kind": "camera", "optics": {"from": {"tertiary": "andor"}}})
         self.assertInvalid(comps, "duplicate_from", component="guider")
 
+    def test_emitted_classes_are_light_for_every_kind(self):
+        extra = {"dump": {"kind": "beamdump"}, "lamp2": {"kind": "lamp"},
+                 "m6": {"kind": "mirror", "positions": {"a": {}, "b": {}}, "optics": {"inputs": {"a": "dump", "b": "lamp2"}}}}
+        g = parse_graph({**BESO, **extra})
+        self.assertEqual(g.emitted_classes("lamp2"), frozenset({"lamp"}))  # off ⇒ dark is a state, not a light class
+        self.assertEqual(g.emitted_classes("dump"), frozenset())
+        self.assertEqual(g.emitted_classes("covercalibrator"), frozenset({"lamp"}))
+
     def test_a_lamp_has_one_output_but_ambient_sources_have_many(self):
         comps = {**BESO, "second": {"kind": "spectrograph", "optics": {"from": "thar_lamp"}}}
         self.assertInvalid(comps, "duplicate_from", component="second")
