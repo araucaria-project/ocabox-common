@@ -67,6 +67,11 @@ class TestSees(unittest.TestCase):
         state = night(covercalibrator="close", **{"covercalibrator.calibrator": "on"})
         self.assertEqual(classes(sees(self.g, state, "camera")), {("lamp", "covercalibrator")})
 
+    def test_unknown_cover_keeps_a_proven_lamp(self):
+        """The calibrator is an independent axis: proven on, its light reaches the detector whatever the cover does."""
+        state = night(covercalibrator=None, **{"covercalibrator.calibrator": "on"})
+        self.assertEqual(classes(sees(self.g, state, "camera")), {(UNDEFINED, "covercalibrator"), ("lamp", "covercalibrator")})
+
     def test_unreported_aspect_asserts_nothing_but_unusable_aspect_is_undefined(self):
         no_lamp_telemetry = ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "dome": "open"}, sun_alt_deg=-30)
         self.assertEqual(classes(sees(self.g, no_lamp_telemetry, "camera")), {("sky.science", "sky")})
@@ -84,8 +89,9 @@ class TestSees(unittest.TestCase):
                 self.assertEqual(classes(sees(self.g, night(sun_alt_deg=sun), "camera")), {(expected, "sky")})
 
     def test_sky_thresholds_overridable_per_component(self):
-        g = parse_graph(jk15(sky={"kind": "sky", "science_sun_alt": -12.0}))
+        g = parse_graph(jk15(sky={"kind": "sky", "science_sun_alt": -12.0, "flat_sun_alt": [-10.0, 1.0]}))
         self.assertEqual(classes(sees(g, night(sun_alt_deg=-14), "camera")), {("sky.science", "sky")})
+        self.assertEqual(classes(sees(g, night(sun_alt_deg=-11), "camera")), {("sky.twilight", "sky")})
 
     def test_unknown_sun_altitude_is_undefined_at_the_sky(self):
         state = ProvenState.build(positions_of(night()))  # no sun_alt_deg
@@ -100,6 +106,32 @@ class TestSees(unittest.TestCase):
             sees(self.g, night(), "tertiary")
         with self.assertRaises(KeyError):
             sees(self.g, night(), "nonexistent")
+
+
+MULTIPORT = {
+    "sky": {"kind": "sky"},
+    "m3": {"kind": "mirror", "positions": {"a": {}, "b": {}, "c": {}}, "optics": {"from": "sky"}},
+    "wide": {"kind": "camera", "optics": {"from": {"m3": ["a", "b"]}}, "paths": {"object": "sky.science", "dark": "dark"}},
+    "narrow": {"kind": "camera", "optics": {"from": {"m3": "c"}}, "paths": {"object": "sky.science"}},
+}
+
+
+class TestMultiPortEdge(unittest.TestCase):
+    """``from: {X: [p1, p2]}`` is one edge live on either port, not two edges one of which is dark."""
+
+    def setUp(self):
+        self.g = parse_graph(MULTIPORT)
+
+    def test_selected_port_in_the_set_is_light_only(self):
+        for pos in ("a", "b"):
+            with self.subTest(pos=pos):
+                self.assertEqual(classes(sees(self.g, ProvenState.build({"m3": pos}, sun_alt_deg=-30), "wide")), {("sky.science", "sky")})
+                self.assertEqual(classes(sees(self.g, ProvenState.build({"m3": pos}, sun_alt_deg=-30), "narrow")), {(DARK, "m3")})
+
+    def test_position_outside_the_set_is_dark(self):
+        state = ProvenState.build({"m3": "c"}, sun_alt_deg=-30)
+        self.assertEqual(classes(sees(self.g, state, "wide")), {(DARK, "m3")})
+        self.assertEqual(classes(sees(self.g, state, "narrow")), {("sky.science", "sky")})
 
 
 class TestDerivedDome(unittest.TestCase):
@@ -126,6 +158,14 @@ class TestDerivedDome(unittest.TestCase):
     def test_wrong_altitude_at_the_screen_azimuth_is_open(self):
         state = ProvenState.build(self.base, sun_alt_deg=-30, dome_shutter_open=True, dome_az_deg=49.0, mount_az_deg=229.0, mount_alt_deg=60.0)
         self.assertEqual(proven_position(self.g, state, self.g.nodes["dome"]), "open")
+
+    def test_missing_altitude_target_at_the_screen_azimuth_is_undecidable(self):
+        comps = {**JK15_WITH_MOUNT, "mount": {"kind": "telescope", "domeflat_az_offset": 180.0}}
+        g = parse_graph(comps)
+        state = ProvenState.build(self.base, sun_alt_deg=10, dome_shutter_open=True, dome_az_deg=49.0, mount_az_deg=229.0, mount_alt_deg=15.0)
+        self.assertEqual(proven_position(g, state, g.nodes["dome"]), Unknown.UNDEFINED)
+        away = state.with_environment(mount_az_deg=100.0, dome_az_deg=100.0)
+        self.assertEqual(proven_position(g, away, g.nodes["dome"]), "open")
 
     def test_missing_inputs_are_undefined(self):
         self.assertEqual(proven_position(self.g, ProvenState.build(self.base), self.g.nodes["dome"]), Unknown.UNDEFINED)

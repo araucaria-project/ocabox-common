@@ -1,11 +1,12 @@
-"""Static routes: every way light can reach a detector, as the selector positions that make it
-so. No runtime state — this is what ``compile`` tabulates, what ``check`` searches for a
-``settable`` answer, and what load-time validation uses to prove every ``paths`` goal has at
-least one route.
+"""Static routes: every way light can reach a detector, as the axis values that make it so. No
+runtime state — this is what ``compile`` tabulates, what ``check`` searches for a ``settable``
+answer, and what load-time validation uses to prove every ``paths`` goal has at least one route.
 
-A route is *clean*: it pins every selector on the path to the transmitting position **and** every
-emitting aspect it crosses to ``off`` (a sky route through the cover calibrator requires the lamp
-off), so that following it yields exactly the goal class and nothing else.
+The enumeration reads the same transfer tables as ``sees``, once per row (every combination of
+the actuated axes). A row contributes a route only when it puts **exactly one** signal on the
+port set the downstream hangs on: a cover open with its lamp on shows two things and is no
+route at all, so *clean* routes (aspects off, no contamination) fall out of the table rather
+than being a rule of their own.
 """
 
 from __future__ import annotations
@@ -13,10 +14,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from datamodels.optics import DARK, Archetype, GoalSpec, state_key
+from datamodels.optics import UNDEFINED, GoalSpec, state_key
 
 from obcom.optics.graph import Node, OpticalGraph
-from obcom.optics.kinds import SelectorShape, Source
+from obcom.optics.kinds import IN, Emit, Source, Transmit
+from obcom.optics.sees import outgoing
 
 
 @dataclass(frozen=True)
@@ -27,8 +29,8 @@ class StaticRoute:
     via: tuple[str, ...]  #: components crossed terminal (excl.) → detector (excl.), in light direction
 
     def merged(self, more: Mapping[str, str], through: str | None) -> "StaticRoute | None":
-        """Extend upstream-computed route through ``through`` requiring ``more`` positions; ``None``
-        if the requirements contradict (the same selector needed twice in different positions)."""
+        """Extend the upstream-computed route through ``through`` requiring ``more`` positions;
+        ``None`` if the requirements contradict (the same axis needed twice in different values)."""
         positions = dict(self.positions)
         for key, symbol in more.items():
             if positions.get(key, symbol) != symbol:
@@ -43,13 +45,8 @@ class StaticRoute:
 
 
 def enumerate_routes(graph: OpticalGraph, detector: str) -> tuple[StaticRoute, ...]:
-    """Every static route into ``detector``, in authored order."""
-    node = graph.node(detector)
-    memo: dict[tuple[str, str | None], tuple[StaticRoute, ...]] = {}
-    routes: list[StaticRoute] = []
-    for edge in node.inputs:
-        routes.extend(_routes_out(graph, graph.nodes[edge.upstream], edge.upstream_port, memo))
-    return tuple(routes)
+    """Every static route into ``detector``: table rows in vocabulary order, feeds in authored order."""
+    return tuple(_arriving(graph, graph.node(detector), IN, {}))
 
 
 def routes_for_goal(routes: Iterable[StaticRoute], goal: GoalSpec) -> tuple[StaticRoute, ...]:
@@ -59,63 +56,39 @@ def routes_for_goal(routes: Iterable[StaticRoute], goal: GoalSpec) -> tuple[Stat
     )
 
 
-def _routes_out(graph: OpticalGraph, node: Node, port: str | None, memo) -> tuple[StaticRoute, ...]:
-    key = (node.name, port)
+# --- internals ---------------------------------------------------------------------------------
+
+
+def _arriving(graph: OpticalGraph, node: Node, in_port: str, memo) -> list[StaticRoute]:
+    routes: list[StaticRoute] = []
+    for feed in node.feeds.get(in_port, ()):
+        routes.extend(_from(graph, graph.nodes[feed.upstream], feed.ports, memo))
+    return routes
+
+
+def _from(graph: OpticalGraph, node: Node, ports: frozenset[str], memo) -> tuple[StaticRoute, ...]:
+    key = (node.name, ports)
     if key in memo:
         return memo[key]
-    result = tuple(_compute_routes_out(graph, node, port, memo))
+    if isinstance(node.kind, Source):
+        result: tuple[StaticRoute, ...] = (StaticRoute(node.kind.possible_classes(node.spec), {}, node.name, ()),)
+    else:
+        routes: list[StaticRoute] = []
+        for values in node.assignments():
+            signals = outgoing(node, values, ports)
+            if len(signals) != 1:
+                continue  # two things at once (light + lamp) is contamination, not a route
+            (signal,) = signals
+            positions = {state_key(node.name, axis): value for axis, value in values.items()}
+            if isinstance(signal, Emit):
+                if signal.light != UNDEFINED:
+                    routes.append(StaticRoute(frozenset({signal.light}), positions, node.name, ()))
+                continue
+            assert isinstance(signal, Transmit)
+            for upstream_route in _arriving(graph, node, signal.port, memo):
+                merged = upstream_route.merged(positions, node.name)
+                if merged is not None:
+                    routes.append(merged)
+        result = tuple(routes)
     memo[key] = result
     return result
-
-
-def _inputs(graph: OpticalGraph, node: Node, memo) -> list[StaticRoute]:
-    routes: list[StaticRoute] = []
-    for edge in node.inputs:
-        if edge.downstream_position is not None:
-            continue  # fan-in inputs are handled per position by the selector itself
-        routes.extend(_routes_out(graph, graph.nodes[edge.upstream], edge.upstream_port, memo))
-    return routes
-
-
-def _extend(routes: Iterable[StaticRoute], more: Mapping[str, str], through: str) -> list[StaticRoute]:
-    out = []
-    for r in routes:
-        m = r.merged(more, through)
-        if m is not None:
-            out.append(m)
-    return out
-
-
-def _compute_routes_out(graph: OpticalGraph, node: Node, port: str | None, memo) -> list[StaticRoute]:
-    if node.archetype == Archetype.SOURCE:
-        assert isinstance(node.kind, Source)
-        return [StaticRoute(node.kind.possible_classes(node.spec), {}, node.name, ())]
-    if node.archetype in (Archetype.PASSIVE, Archetype.SPLITTER):
-        return _extend(_inputs(graph, node, memo), {}, node.name)
-    if node.archetype == Archetype.DETECTOR:
-        return []  # a detector emits nothing (rejected at parse time anyway)
-
-    # selector
-    dark = [StaticRoute(frozenset({DARK}), {node.name: d}, node.name, ()) for d in sorted(node.dark_positions())]
-    if node.shape == SelectorShape.OUTPUT_PORTS:
-        others = [StaticRoute(frozenset({DARK}), {node.name: q}, node.name, ()) for q in sorted(node.positions or ()) if q != port]
-        if port is None or port not in (node.positions or ()):
-            return others
-        return _extend(_inputs(graph, node, memo), {node.name: port}, node.name) + others
-    if node.shape == SelectorShape.FAN_IN:
-        routes: list[StaticRoute] = []
-        for pos, upstream in node.fan_in.items():
-            routes += _extend(_routes_out(graph, graph.nodes[upstream], None, memo), {node.name: pos}, node.name)
-        return routes + dark
-    # GATE
-    aspects_off = {state_key(node.name, a.name): a.off for a in node.aspects}
-    routes = []
-    for p in sorted(node.transmitting_positions()):
-        routes += _extend(_inputs(graph, node, memo), {node.name: p, **aspects_off}, node.name)
-    for d in sorted(node.dark_positions()):
-        routes.append(StaticRoute(frozenset({DARK}), {node.name: d, **aspects_off}, node.name, ()))
-        for a in node.aspects:
-            routes.append(
-                StaticRoute(frozenset({a.emits}), {node.name: d, **aspects_off, state_key(node.name, a.name): a.on}, node.name, ())
-            )
-    return routes

@@ -1,10 +1,13 @@
 """The optical graph: ``parse_graph`` turns a telescope's ``components:`` into validated nodes and
-edges, or refuses with every reason at once (``GraphInvalid`` → the ``Invalid`` verdict).
+feeds, or refuses with every reason at once (``GraphInvalid`` → the ``Invalid`` verdict).
 
-Everything a config typo can express is caught here, at load time: unknown kinds and components,
-references to undeclared ports, two components hanging on one port without a splitter, ports on
-components that have none, cycles, ``paths`` goals no source can ever satisfy, ``via`` outside
-the detector's upstream cone. Runtime state never enters this module.
+A node is a component with its kind contract; a *feed* is light arriving at one of the node's
+input ports from a set of output ports of an upstream component (``from: X``, ``from: {X: p}``,
+``from: {X: [p1, p2]}``, ``inputs: {pos: X}`` all normalise to feeds). Everything a config typo
+can express is caught here, at load time: unknown kinds and components, references to undeclared
+ports, two components hanging on one port without a splitter, ports on components that have
+none, cycles, ``paths`` goals no source can ever satisfy, ``via`` outside the detector's upstream
+cone, malformed kind options. Runtime state never enters this module.
 
 Reporting: structural errors and cycles are collected together and raised at once; ``paths``
 validation needs a structurally sound, acyclic graph (it enumerates routes) and therefore runs
@@ -15,10 +18,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping
+from itertools import product
+from typing import Iterable, Iterator, Mapping
 
 from datamodels.optics import (
     DARK,
+    UNDEFINED,
     Archetype,
     ConfigError,
     DetectorPaths,
@@ -30,7 +35,22 @@ from datamodels.optics import (
 )
 from pydantic import ValidationError
 
-from obcom.optics.kinds import DEFAULT_REGISTRY, Aspect, Kind, KindRegistry, Selector, SelectorShape, Source
+from obcom.optics.kinds import (
+    DEFAULT_REGISTRY,
+    IN,
+    OUT,
+    Aspect,
+    Axis,
+    AxisValues,
+    Emit,
+    Kind,
+    KindRegistry,
+    Selector,
+    SelectorShape,
+    Signals,
+    Source,
+    Transmit,
+)
 
 
 class GraphInvalid(ValueError):
@@ -46,24 +66,12 @@ class GraphInvalid(ValueError):
 
 
 @dataclass(frozen=True)
-class Edge:
-    """Light flows ``upstream`` → ``downstream``. ``port`` names the port of the *owner*: for an
-    UPSTREAM-owned edge it is an output port of ``upstream`` (``from: {tertiary: andor}``); for a
-    SELF-owned edge it is an input position of ``downstream`` (``inputs: {open: sky}``); ``None``
-    is a passive edge from the upstream's single output."""
+class Feed:
+    """Light arriving at one input port of a node from ``upstream``'s output ``ports``: one edge,
+    live on any of the ports (``from: {X: [p1, p2]}``); ``{OUT}`` for a single-output upstream."""
 
     upstream: str
-    downstream: str
-    port: str | None = None
-    owner: PortOwner | None = None
-
-    @property
-    def upstream_port(self) -> str | None:
-        return self.port if self.owner == PortOwner.UPSTREAM else None
-
-    @property
-    def downstream_position(self) -> str | None:
-        return self.port if self.owner == PortOwner.SELF else None
+    ports: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -71,40 +79,82 @@ class Node:
     name: str
     kind: Kind
     spec: OpticalComponentSpec
-    shape: SelectorShape | None = None
-    positions: frozenset[str] | None = None  #: declared position vocabulary (selectors; splitters with ``positions:``)
-    inputs: tuple[Edge, ...] = ()
-    outputs: tuple[Edge, ...] = ()
+    feeds: Mapping[str, tuple[Feed, ...]] = field(default_factory=dict)  #: input port → feeds
 
     @property
     def archetype(self) -> Archetype:
         return self.kind.archetype
 
     @property
+    def inputs(self) -> frozenset[str]:
+        return self.kind.inputs(self.spec)
+
+    @property
+    def outputs(self) -> frozenset[str] | None:
+        return self.kind.outputs(self.spec)
+
+    @property
+    def axes(self) -> tuple[Axis, ...]:
+        return self.kind.axes(self.spec)
+
+    @property
+    def primary(self) -> Axis | None:
+        return next((a for a in self.axes if a.name is None), None)
+
+    @property
     def aspects(self) -> tuple[Aspect, ...]:
         return self.kind.aspects if isinstance(self.kind, Selector) else ()
 
     @property
+    def positions(self) -> frozenset[str] | None:
+        """Declared position vocabulary: a selector's primary axis, a splitter's declared ports."""
+        if self.archetype == Archetype.SELECTOR:
+            return self.primary.vocabulary if self.primary is not None else frozenset()
+        if self.archetype == Archetype.SPLITTER:
+            return self.outputs
+        return None
+
+    @property
+    def shape(self) -> SelectorShape | None:
+        return self.kind.shape(self.spec) if isinstance(self.kind, Selector) else None
+
+    @property
+    def upstreams(self) -> frozenset[str]:
+        return frozenset(f.upstream for feeds in self.feeds.values() for f in feeds)
+
+    @property
     def fan_in(self) -> dict[str, str]:
-        """FAN_IN selectors: position → upstream component."""
-        return {e.port: e.upstream for e in self.inputs if e.owner == PortOwner.SELF and e.port is not None}
-
-    def transmitting_positions(self) -> frozenset[str]:
-        """Positions in which light passes (GATE: not blocking; FAN_IN: an input; OUTPUT_PORTS: all)."""
-        positions = self.positions or frozenset()
-        if self.shape == SelectorShape.FAN_IN:
-            return frozenset(self.fan_in)
-        if self.shape == SelectorShape.GATE:
-            assert isinstance(self.kind, Selector)
-            return frozenset(p for p in positions if not self.kind.blocks(self.spec, p))
-        return positions
-
-    def dark_positions(self) -> frozenset[str]:
-        return (self.positions or frozenset()) - self.transmitting_positions()
+        """Fan-in selectors: input position → upstream component."""
+        return {port: feeds[0].upstream for port, feeds in self.feeds.items() if port != IN and feeds}
 
     @property
     def paths(self) -> DetectorPaths | None:
         return self.spec.paths
+
+    def table(self, values: AxisValues) -> dict[str, Signals]:
+        return self.kind.transfer(self.spec, values)
+
+    def assignments(self) -> Iterator[dict[str | None, str]]:
+        """Every combination of the actuated axes' vocabularies (one empty assignment when there
+        are none) — the rows of the transfer table that routes enumerate."""
+        axes = [a for a in self.axes if a.actuated]
+        for combo in product(*(sorted(a.vocabulary) for a in axes)):
+            yield {a.name: v for a, v in zip(axes, combo)}
+
+    def transmitting_positions(self) -> frozenset[str]:
+        """Primary positions in which light passes through the component (other axes at default)."""
+        if self.primary is None:
+            return frozenset()
+        defaults = {a.name: a.default for a in self.axes if a.name is not None}
+        result = set()
+        for p in self.primary.vocabulary:
+            row = self.table({None: p, **defaults})
+            if any(isinstance(s, Transmit) for sigs in row.values() for s in sigs):
+                result.add(p)
+        return frozenset(result)
+
+    def dark_positions(self) -> frozenset[str]:
+        return (self.positions or frozenset()) - self.transmitting_positions()
 
 
 @dataclass(frozen=True)
@@ -139,24 +189,31 @@ class OpticalGraph:
     def upstream_cone(self, name: str) -> frozenset[str]:
         """Every component light can reach ``name`` from, ``name`` excluded."""
         seen: set[str] = set()
-        stack = [e.upstream for e in self.node(name).inputs]
+        stack = list(self.node(name).upstreams)
         while stack:
             current = stack.pop()
             if current in seen:
                 continue
             seen.add(current)
-            stack.extend(e.upstream for e in self.nodes[current].inputs)
+            stack.extend(self.nodes[current].upstreams)
         return frozenset(seen)
 
+    def emitted_classes(self, name: str) -> frozenset[str]:
+        """Every light class the component can ever put on a path (its own emissions, reserved
+        classes excluded)."""
+        node = self.nodes[name]
+        if isinstance(node.kind, Source):
+            return node.kind.possible_classes(node.spec)
+        classes: set[str] = set()
+        for values in node.assignments():
+            for signals in node.table(values).values():
+                classes |= {s.light for s in signals if isinstance(s, Emit)}
+        return frozenset(classes - {DARK, UNDEFINED})
+
     def possible_classes(self, names: Iterable[str]) -> frozenset[str]:
-        """Every light class the given components can ever put on a path."""
         classes: set[str] = set()
         for name in names:
-            node = self.nodes[name]
-            if isinstance(node.kind, Source):
-                classes |= node.kind.possible_classes(node.spec)
-            for aspect in node.aspects:
-                classes.add(aspect.emits)
+            classes |= self.emitted_classes(name)
         return frozenset(classes)
 
 
@@ -181,7 +238,7 @@ def parse_graph(
     errors: list[ConfigError] = []
     nodes = _build_nodes(spec, registry, errors)
     graph = OpticalGraph(nodes=nodes, components=spec.components, presets=spec.presets, registry=registry, telescope=telescope)
-    _check_cycles(graph, errors)  # safe on a partially valid graph: every reported problem, structural and cyclic, at once
+    _check_cycles(graph, errors)  # safe on a partially valid graph: every structural and cyclic problem at once
     if errors:
         raise GraphInvalid(errors)
     _check_paths(graph, errors)
@@ -258,91 +315,88 @@ def _build_nodes(spec: TelescopeOpticsSpec, registry: KindRegistry, errors: list
             who = ", ".join(referenced[name])
             _err(errors, "unknown_kind", f"{who}: reference {name!r} whose kind {comp.kind!r} is not optical", who if "," not in who else None)
 
-    edges: list[Edge] = []
-    for name, kind in included.items():
-        comp = components[name]
-        if comp.optics is None:
-            continue
-        if comp.optics.is_fan_in and not isinstance(kind, Selector):
-            _err(errors, "inputs_on_non_selector", f"{name}: only a selector may declare inputs (kind {comp.kind!r} is {kind.archetype})", name)
-            continue
-        for ref in comp.optics.edges():
-            if ref.component not in components:
-                _err(errors, "unknown_component", f"{name}: optics references unknown component {ref.component!r}", name)
-                continue
-            if ref.component not in included:
-                continue  # reported above
-            edges.append(Edge(upstream=ref.component, downstream=name, port=ref.port, owner=ref.port_owner))
-
     nodes: dict[str, Node] = {}
     for name, kind in included.items():
         comp = components[name]
-        shape = kind.shape(comp) if isinstance(kind, Selector) else None
-        positions = kind.declared_positions(comp)
-        if isinstance(kind, Selector) and shape == SelectorShape.FAN_IN and kind.fan_in_positions is not None:
-            for pos in comp.optics.inputs or {}:
-                if pos not in kind.fan_in_positions:
-                    _err(errors, "undeclared_position", f"{name}: kind {comp.kind!r} selects between {sorted(kind.fan_in_positions)}, not {pos!r}", name, f"{name}.optics.inputs.{pos}")
-        if isinstance(kind, Selector) and shape == SelectorShape.FAN_IN and comp.positions is not None:
-            for pos in comp.optics.inputs or {}:
-                if pos not in comp.positions:
-                    _err(errors, "undeclared_position", f"{name}: input position {pos!r} is not among its declared positions", name, f"{name}.optics.inputs.{pos}")
-        nodes[name] = Node(
-            name=name,
-            kind=kind,
-            spec=comp,
-            shape=shape,
-            positions=positions,
-            inputs=tuple(e for e in edges if e.downstream == name),
-            outputs=tuple(e for e in edges if e.upstream == name),
-        )
+        feeds: dict[str, list[Feed]] = defaultdict(list)
+        if comp.optics is not None:
+            if comp.optics.is_fan_in and not isinstance(kind, Selector):
+                _err(errors, "inputs_on_non_selector", f"{name}: only a selector may declare inputs (kind {comp.kind!r} is {kind.archetype})", name)
+            else:
+                ports_of: dict[str, set[str]] = defaultdict(set)
+                for ref in comp.optics.edges():
+                    if ref.component not in components:
+                        _err(errors, "unknown_component", f"{name}: optics references unknown component {ref.component!r}", name)
+                        continue
+                    if ref.component not in included:
+                        continue  # reported above
+                    if ref.port_owner == PortOwner.SELF:
+                        feeds[ref.port].append(Feed(ref.component, frozenset({OUT})))
+                    elif ref.port_owner == PortOwner.UPSTREAM:
+                        ports_of[ref.component].add(ref.port)
+                    else:
+                        feeds[IN].append(Feed(ref.component, frozenset({OUT})))
+                for upstream, ports in ports_of.items():
+                    feeds[IN].append(Feed(upstream, frozenset(ports)))
+            if isinstance(kind, Selector) and comp.optics.is_fan_in:
+                for pos in comp.optics.inputs or {}:
+                    if kind.fan_in_positions is not None and pos not in kind.fan_in_positions:
+                        _err(errors, "undeclared_position", f"{name}: kind {comp.kind!r} selects between {sorted(kind.fan_in_positions)}, not {pos!r}", name, f"{name}.optics.inputs.{pos}")
+                    elif comp.positions is not None and pos not in comp.positions:
+                        _err(errors, "undeclared_position", f"{name}: input position {pos!r} is not among its declared positions", name, f"{name}.optics.inputs.{pos}")
+        for problem in kind.validate(comp, components):
+            _err(errors, "invalid_option", f"{name}: {problem}", name, name)
+        nodes[name] = Node(name=name, kind=kind, spec=comp, feeds={port: tuple(fs) for port, fs in feeds.items()})
 
-    for edge in edges:
-        _check_edge(edge, nodes, errors)
-    _check_duplicates(edges, nodes, errors)
+    for node in nodes.values():
+        for in_port, feeds in node.feeds.items():
+            for feed in feeds:
+                _check_feed(node, in_port, feed, nodes, errors)
+    _check_duplicates(nodes, errors)
     return nodes
 
 
-def _check_edge(edge: Edge, nodes: dict[str, Node], errors: list[ConfigError]) -> None:
-    up, down = nodes[edge.upstream], nodes[edge.downstream]
-    path = f"{down.name}.optics"
+def _check_feed(node: Node, in_port: str, feed: Feed, nodes: dict[str, Node], errors: list[ConfigError]) -> None:
+    up = nodes[feed.upstream]
+    path = f"{node.name}.optics"
     if up.archetype == Archetype.DETECTOR:
-        _err(errors, "detector_as_upstream", f"{down.name}: hangs on {up.name!r}, but a detector emits no light", down.name, path)
+        _err(errors, "detector_as_upstream", f"{node.name}: hangs on {up.name!r}, but a detector emits no light", node.name, path)
         return
-    if edge.owner == PortOwner.SELF:
-        # fan-in takes the upstream's *single* output; a multi-output selector cannot be named without its port
-        if up.archetype == Archetype.SELECTOR and up.shape == SelectorShape.OUTPUT_PORTS:
-            _err(errors, "port_required", f"{down.name}: inputs reference {up.name!r}, which switches between output ports; hang a passive on the port (`from: {{{up.name}: <symbol>}}`) and reference that", down.name, path)
+    outs = up.outputs
+    if outs is None:
+        return  # a splitter feeds whatever port a downstream names
+    if outs == frozenset({OUT}):
+        if feed.ports != frozenset({OUT}):
+            if up.archetype == Archetype.SELECTOR:
+                _err(errors, "no_output_ports", f"{node.name}: {up.name!r} has a single output ({up.shape.value} selector); use `from: {up.name}`", node.name, path)
+            else:
+                _err(errors, "not_a_switch", f"{node.name}: {up.name!r} ({up.archetype}) has no ports; use `from: {up.name}`", node.name, path)
         return
-    if edge.owner == PortOwner.UPSTREAM:
-        if up.archetype == Archetype.SELECTOR and up.shape == SelectorShape.OUTPUT_PORTS:
-            if up.positions is None:
-                _err(errors, "undeclared_port", f"{down.name}: references port {edge.port!r} of {up.name!r}, which declares no positions", down.name, path)
-            elif edge.port not in up.positions:
-                _err(errors, "undeclared_port", f"{down.name}: {up.name!r} has no port {edge.port!r} (declared: {', '.join(sorted(up.positions))})", down.name, path)
-            return
-        if up.archetype == Archetype.SPLITTER:
-            if up.positions is not None and edge.port not in up.positions:
-                _err(errors, "undeclared_port", f"{down.name}: splitter {up.name!r} has no port {edge.port!r}", down.name, path)
-            return
-        if up.archetype == Archetype.SELECTOR:
-            _err(errors, "no_output_ports", f"{down.name}: {up.name!r} has a single output ({up.shape.value} selector); use `from: {up.name}`", down.name, path)
-            return
-        _err(errors, "not_a_switch", f"{down.name}: {up.name!r} ({up.archetype}) has no ports; use `from: {up.name}`", down.name, path)
+    # a switch between output ports (M3): the feed must name which
+    if feed.ports == frozenset({OUT}):
+        if in_port == IN:
+            _err(errors, "port_required", f"{node.name}: {up.name!r} switches between output ports; say which one: `from: {{{up.name}: <symbol>}}`", node.name, path)
+        else:
+            _err(errors, "port_required", f"{node.name}: inputs reference {up.name!r}, which switches between output ports; hang a passive on the port (`from: {{{up.name}: <symbol>}}`) and reference that", node.name, path)
         return
-    # passive edge
-    if up.archetype == Archetype.SELECTOR and up.shape == SelectorShape.OUTPUT_PORTS:
-        _err(errors, "port_required", f"{down.name}: {up.name!r} switches between output ports; say which one: `from: {{{up.name}: <symbol>}}`", down.name, path)
+    for port in sorted(feed.ports - outs):
+        if not outs:
+            _err(errors, "undeclared_port", f"{node.name}: references port {port!r} of {up.name!r}, which declares no positions", node.name, path)
+        else:
+            _err(errors, "undeclared_port", f"{node.name}: {up.name!r} has no port {port!r} (declared: {', '.join(sorted(outs))})", node.name, path)
 
 
-def _check_duplicates(edges: list[Edge], nodes: dict[str, Node], errors: list[ConfigError]) -> None:
-    by_output: dict[tuple[str, str | None], list[str]] = defaultdict(list)
-    for e in edges:
-        by_output[(e.upstream, e.upstream_port)].append(e.downstream)
+def _check_duplicates(nodes: dict[str, Node], errors: list[ConfigError]) -> None:
+    by_output: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for node in nodes.values():
+        for feeds in node.feeds.values():
+            for feed in feeds:
+                for port in feed.ports:
+                    by_output[(feed.upstream, port)].append(node.name)
     for (upstream, port), downs in by_output.items():
         if len(downs) < 2 or nodes[upstream].archetype in (Archetype.SPLITTER, Archetype.SOURCE):
             continue  # a splitter feeds several outputs by design; a source (sky, screen) is ambient light
-        where = f"{upstream}:{port}" if port else upstream
+        where = upstream if port == OUT else f"{upstream}:{port}"
         for d in downs:
             _err(errors, "duplicate_from", f"{d}: {', '.join(downs)} all hang on {where} — one output feeds one component; insert a splitter", d, f"{d}.optics")
 
@@ -354,14 +408,14 @@ def _check_cycles(graph: OpticalGraph, errors: list[ConfigError]) -> None:
 
     def visit(name: str, trail: list[str]) -> None:
         colour[name] = GREY
-        for e in graph.nodes[name].inputs:
-            if e.upstream not in colour:
+        for upstream in sorted(graph.nodes[name].upstreams):
+            if upstream not in colour:
                 continue  # dangling reference, reported structurally
-            if colour[e.upstream] == GREY:
-                cycle = trail[trail.index(e.upstream):] + [e.upstream] if e.upstream in trail else [e.upstream, name, e.upstream]
+            if colour[upstream] == GREY:
+                cycle = trail[trail.index(upstream):] + [upstream] if upstream in trail else [upstream, name, upstream]
                 _err(errors, "cycle", f"optical cycle: {' -> '.join(cycle)}", name)
-            elif colour[e.upstream] == WHITE:
-                visit(e.upstream, trail + [e.upstream])
+            elif colour[upstream] == WHITE:
+                visit(upstream, trail + [upstream])
         colour[name] = BLACK
 
     for name in graph.nodes:
@@ -412,16 +466,13 @@ def _check_paths(graph: OpticalGraph, errors: list[ConfigError]) -> None:
                         ok = False
                         continue
                     sel = graph.nodes[component]
-                    if aspect is not None:
-                        asp = sel.kind.aspect(aspect) if isinstance(sel.kind, Selector) else None
-                        if asp is None:
-                            _err(errors, "unknown_aspect", f"{where}: {component!r} has no aspect {aspect!r}", node.name, f"{where}.via")
-                            ok = False
-                        elif symbol not in asp.positions:
-                            _err(errors, "undeclared_position", f"{where}: {key!r} is {asp.on!r} or {asp.off!r}, not {symbol!r}", node.name, f"{where}.via")
-                            ok = False
-                    elif sel.positions is None or symbol not in sel.positions:
-                        _err(errors, "undeclared_position", f"{where}: {component!r} has no position {symbol!r}", node.name, f"{where}.via")
+                    axis = next((a for a in sel.axes if a.name == aspect), None)
+                    if axis is None:
+                        _err(errors, "unknown_aspect", f"{where}: {component!r} has no aspect {aspect!r}", node.name, f"{where}.via")
+                        ok = False
+                    elif symbol not in axis.vocabulary:
+                        what = key if aspect else component
+                        _err(errors, "undeclared_position", f"{where}: {what!r} has no position {symbol!r} (declared: {', '.join(sorted(axis.vocabulary))})", node.name, f"{where}.via")
                         ok = False
                 if ok and not routes_for_goal(routes, alt):
                     _err(errors, "unsatisfiable_path", f"{where}: no route through the graph shows {node.name} {alt.see!r} with via {alt.via}", node.name, where)

@@ -1,9 +1,11 @@
 import unittest
 
-from datamodels.optics import Archetype, Invalid, PortOwner
+from datamodels.optics import Archetype, Invalid
 
 from obcom.optics import (
     DEFAULT_REGISTRY,
+    IN,
+    OUT,
     GraphInvalid,
     KindRegistry,
     Passive,
@@ -46,13 +48,14 @@ class TestParseGraph(unittest.TestCase):
         self.assertEqual(g.nodes["m4"].dark_positions(), frozenset({"park"}))
         self.assertEqual(g.nodes["tertiary"].shape, SelectorShape.OUTPUT_PORTS)
 
-    def test_edges_keep_the_port_owner(self):
+    def test_edges_normalise_to_feeds_per_input_port(self):
         g = parse_graph(jk15())
-        (edge,) = g.nodes["derotator"].inputs
-        self.assertEqual((edge.upstream, edge.port, edge.owner), ("tertiary", "andor", PortOwner.UPSTREAM))
-        self.assertEqual(edge.upstream_port, "andor")
-        dome_edges = {e.port: (e.upstream, e.owner) for e in g.nodes["dome"].inputs}
-        self.assertEqual(dome_edges, {"open": ("sky", PortOwner.SELF), "flat": ("flatscreen", PortOwner.SELF)})
+        (feed,) = g.nodes["derotator"].feeds[IN]
+        self.assertEqual((feed.upstream, feed.ports), ("tertiary", frozenset({"andor"})))
+        self.assertEqual({port: fs[0].upstream for port, fs in g.nodes["dome"].feeds.items()}, {"open": "sky", "flat": "flatscreen"})
+        (passive,) = g.nodes["covercalibrator"].feeds[IN]
+        self.assertEqual((passive.upstream, passive.ports), ("dome", frozenset({OUT})))
+        self.assertEqual(g.nodes["dome"].fan_in, {"open": "sky", "flat": "flatscreen"})
 
     def test_upstream_cone(self):
         g = parse_graph(jk15())
@@ -219,6 +222,14 @@ class TestLoadTimeValidation(unittest.TestCase):
         self.assertEqual({e.path for e in cm.exception.errors}, {"presets.bad.beso", "presets.worse.camera"})
         g = parse_graph(jk15(), presets={"imaging": {"camera": "object"}, "calibration": {"camera": "dark"}})
         self.assertEqual(set(g.presets), {"imaging", "calibration"})
+
+    def test_kind_options_are_validated_at_load(self):
+        self.assertInvalid(jk15(sky={"kind": "sky", "flat_sun_alt": -10}), "invalid_option", component="sky")
+        self.assertInvalid(jk15(sky={"kind": "sky", "science_sun_alt": "dark"}), "invalid_option", component="sky")
+        self.assertInvalid(jk15(sky={"kind": "sky", "science_sun_alt": -5.0}), "invalid_option", component="sky")  # above the flat range
+        self.assertInvalid(jk15(dome={**jk15()["dome"], "slew_tolerance": "3"}), "invalid_option", component="dome")
+        self.assertInvalid(jk15(mount={"kind": "telescope", "domeflat_alt": True}), "invalid_option", component="dome")
+        parse_graph(jk15(sky={"kind": "sky", "science_sun_alt": -12, "flat_sun_alt": [-10, 2]}))
 
     def test_grammar_errors_are_reported_with_location(self):
         exc = self.assertInvalid(jk15(camera={"kind": "camera", "optics": {"from": ["a", "b"]}}), "grammar", component="camera")

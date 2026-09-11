@@ -1,9 +1,16 @@
 """Kind contracts: what a component *kind* does to light.
 
-The archetype of a component (source / selector / splitter / passive / detector) is derived from
-its ``kind`` here, in code — never from config strings. Each contract also says what a selector's
-state means (which positions transmit, which block, which aspects emit), how a stateful source
-classifies its light and how a derived selector computes its position from the environment.
+Every optical kind is a **transfer table**: given the values of its state axes, which of its
+output ports carry what. A table value is a set of *signals* — ``Transmit(input port)`` (light
+arriving at that input passes) or ``Emit(light class)`` (the component itself is what you look
+at: a source, a closed cover, the back of a mirror; ``dark`` and ``undefined`` are emissions of
+the reserved classes). The traversal (``sees``, ``routes``) knows nothing about mirrors, covers
+or domes: it only asks kinds for their tables. The archetype is derived from ``kind`` here, in
+code — never from config strings.
+
+State axes: a selector has a primary axis (its position, state key = the component name) and
+may have secondary axes (``covercalibrator.calibrator``). Each axis names its vocabulary, what to
+assume when nobody reports it, or how to derive it from the environment (the dome).
 
 The registry is injectable: ocabox-server registers its device kinds, tests register toys; the
 default registry knows the kinds that exist at OCM today.
@@ -13,100 +20,187 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Mapping
+from typing import Callable, ClassVar, Mapping
 
-from datamodels.optics import DARK, Archetype, OpticalComponentSpec, SkyState, SourceFamily
+from datamodels.optics import DARK, UNDEFINED, Archetype, Environment, OpticalComponentSpec, SkyState, SourceFamily
 
-if TYPE_CHECKING:
-    from datamodels.optics import Environment
+# --- signals -----------------------------------------------------------------------------------
 
-
-class SelectorShape(Enum):
-    """How a selector switches light. Resolved per component: the same ``mirror`` kind is
-    OUTPUT_PORTS as M3 (one input, a port per instrument) and FAN_IN as BESO's M4/M5
-    (several inputs, one output)."""
-
-    OUTPUT_PORTS = "output_ports"  #: position = the output port that transmits; every other output is dark
-    FAN_IN = "fan_in"  #: position = which input is transmitted (``inputs: {pos: X}``)
-    GATE = "gate"  #: one input, one output; a position either transmits or blocks (cover, dark slide)
+#: Name of the single input / single output port of components that have just one.
+IN = "in"
+OUT = "out"
 
 
 @dataclass(frozen=True)
-class Aspect:
-    """A secondary, independent axis of a selector that *emits* when in ``on``: the calibrator
-    lamp of an Alpaca ICoverCalibrator. Its proven state lives under ``<component>.<name>``."""
+class Transmit:
+    """Light arriving at ``port`` (an input port of the same component) passes to this output."""
 
-    name: str
-    emits: str
-    on: str = "on"
-    off: str = "off"
+    port: str = IN
 
-    @property
-    def positions(self) -> frozenset[str]:
-        return frozenset({self.on, self.off})
+
+@dataclass(frozen=True)
+class Emit:
+    """This component is the terminal: it puts ``light`` on the output (a source class, or the
+    reserved ``dark`` / ``undefined``)."""
+
+    light: str
+
+
+Signal = Transmit | Emit
+Signals = frozenset[Signal]
+DARK_OUT: Signals = frozenset({Emit(DARK)})
+UNDEFINED_OUT: Signals = frozenset({Emit(UNDEFINED)})
+
+
+def is_dark(signal: Signal) -> bool:
+    return isinstance(signal, Emit) and signal.light == DARK
+
+
+# --- axes --------------------------------------------------------------------------------------
+
+Deriver = Callable[[OpticalComponentSpec, Mapping[str, OpticalComponentSpec], Environment], "str | None"]
+
+
+@dataclass(frozen=True)
+class Axis:
+    """One state axis of a component. ``name=None`` is the primary axis (state key = the
+    component name); a named axis is an aspect (state key ``component.name``).
+
+    ``vocabulary`` — the legal symbols. ``default`` — the value assumed when no telemetry reports
+    the axis: ``None`` means *unknown ⇒ undefined* (commanded ≠ proven); an aspect nobody reports
+    may default to ``off``. ``derive`` — computes the value from the environment when no
+    telemetry names it (the dome). ``actuated`` axes appear in routes as positions to set;
+    the sun is not actuated."""
+
+    name: str | None
+    vocabulary: frozenset[str]
+    default: str | None = None
+    derive: Deriver | None = None
+    actuated: bool = True
+
+
+#: axis name → value; a ``None`` value means *undefined*.
+AxisValues = Mapping[str | None, str | None]
+
+
+class SelectorShape(Enum):
+    """Descriptive only (introspection, drawing): how a selector's ports are laid out. The
+    traversal never looks at it — it reads the transfer table."""
+
+    OUTPUT_PORTS = "output_ports"  #: one input, a port per position (M3)
+    FAN_IN = "fan_in"  #: several inputs, one output, the position picks the input (M4/M5, dome)
+    GATE = "gate"  #: one input, one output; a position either transmits or blocks (cover)
+
+
+# --- kinds ---------------------------------------------------------------------------------------
+
+
+def _number(extra: Mapping, key: str, problems: list[str]) -> float | None:
+    value = extra.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        problems.append(f"{key} must be a number, got {value!r}")
+        return None
+    return float(value)
 
 
 @dataclass(frozen=True)
 class Kind:
-    """Base contract. Subclasses refine the archetype-specific behaviour; the solver only ever
-    talks to these methods."""
+    """Base contract. The solver only ever talks to these methods."""
 
     name: str
     archetype: Archetype
 
-    def declared_positions(self, spec: OpticalComponentSpec) -> frozenset[str] | None:
-        """Position vocabulary of the component: ``positions:`` from config when present, the kind's
-        intrinsic positions otherwise. ``None`` = unconstrained (a splitter without ports)."""
-        if spec.positions is not None:
-            return frozenset(spec.positions)
-        return None
+    def inputs(self, spec: OpticalComponentSpec) -> frozenset[str]:
+        """Input port names: ``{IN}`` for single-input components, the position symbols for a
+        fan-in selector, none for a source."""
+        return frozenset({IN})
+
+    def outputs(self, spec: OpticalComponentSpec) -> frozenset[str] | None:
+        """Output port names: ``{OUT}`` for a single output, the position symbols for a switch
+        between instruments, ``None`` = open (a splitter feeds whatever port a downstream names),
+        empty for a detector."""
+        return frozenset({OUT})
+
+    def axes(self, spec: OpticalComponentSpec) -> tuple[Axis, ...]:
+        return ()
+
+    def transfer(self, spec: OpticalComponentSpec, values: AxisValues) -> dict[str, Signals]:
+        """The table row for these axis values: output port → signals. Kinds with open outputs
+        (splitters) return the row under ``OUT`` and it applies to every port."""
+        return {OUT: frozenset({Transmit()})}
+
+    def validate(self, spec: OpticalComponentSpec, components: Mapping[str, OpticalComponentSpec]) -> list[str]:
+        """Kind-specific options read from the component's extras, checked at graph load so that a
+        malformed threshold is an ``invalid_option`` verdict, never a ``TypeError`` at 3 a.m."""
+        return []
 
 
-# --- sources ---------------------------------------------------------------------------------
+# --- sources: no inputs, one output, the emission decided by the kind ------------------------------
 
 
 @dataclass(frozen=True)
 class Source(Kind):
     archetype: Archetype = field(default=Archetype.SOURCE, init=False)
 
+    def inputs(self, spec):
+        return frozenset()
+
     def possible_classes(self, spec: OpticalComponentSpec) -> frozenset[str]:
-        """Every light class this source can ever emit (static, for route enumeration)."""
+        """Every light class this source can ever emit (static route enumeration)."""
         raise NotImplementedError
 
-    def emission(self, spec: OpticalComponentSpec, position: str | None, env: "Environment") -> str | None:
-        """The class emitted now. ``position`` is the proven state of the source if it has one
-        (a lamp: on/off), ``None`` if none is known. Returns ``None`` when the class cannot be
-        decided (``undefined``)."""
+    def emission(self, spec: OpticalComponentSpec, values: AxisValues) -> str:
+        """The class emitted for these axis values; ``UNDEFINED`` when it cannot be decided."""
         raise NotImplementedError
+
+    def transfer(self, spec, values):
+        return {OUT: frozenset({Emit(self.emission(spec, values))})}
 
 
 @dataclass(frozen=True)
 class ConstantSource(Source):
-    """Emits one class whenever it is on the path. ``switchable`` sources (lamps) are dark when
-    proven off; without telemetry they are taken as lit — the class names the *type* of light
-    on the path, and a lamp's power state is the calibration sequence's business."""
+    """Emits one class whenever it is on the path. ``switchable`` sources (lamps) have a power
+    axis: proven ``off`` ⇒ dark, unusable telemetry ⇒ undefined, unreported ⇒ taken as lit — the
+    class names the *type* of light on the path; a lamp's power is the calibration sequence's
+    business."""
 
     emits: str = ""
     switchable: bool = False
 
-    def possible_classes(self, spec: OpticalComponentSpec) -> frozenset[str]:
+    def axes(self, spec):
+        return (Axis(None, frozenset({"on", "off"}), default="on", actuated=False),) if self.switchable else ()
+
+    def possible_classes(self, spec):
         return frozenset({self.emits})
 
-    def emission(self, spec: OpticalComponentSpec, position: str | None, env: "Environment") -> str | None:
-        if self.switchable and position == "off":
-            return DARK
-        return self.emits
+    def emission(self, spec, values):
+        if not self.switchable:
+            return self.emits
+        power = values.get(None, "on")
+        if power is None:
+            return UNDEFINED
+        return DARK if power == "off" else self.emits
 
 
 @dataclass(frozen=True)
 class SkySource(Source):
     """The sky is a stateful source: its class follows the sun. Thresholds are kind knowledge,
-    overridable per component (``science_sun_alt``, ``flat_sun_alt``: ``[min, max]``)."""
+    overridable per component (``science_sun_alt``, ``flat_sun_alt: [min, max]``)."""
 
+    name: str = "sky"
     science_sun_alt: float = -18.0
     flat_sun_alt: tuple[float, float] = (-15.0, 1.0)
 
-    def possible_classes(self, spec: OpticalComponentSpec) -> frozenset[str]:
+    def axes(self, spec):
+        return (Axis(None, frozenset(str(s) for s in SkyState), derive=self._sun_state, actuated=False),)
+
+    def _sun_state(self, spec, components, env: Environment) -> str | None:
+        state = self.sky_state(spec, env.sun_alt_deg)
+        return None if state is None else str(state)
+
+    def possible_classes(self, spec):
         return frozenset(f"{SourceFamily.SKY}.{s}" for s in SkyState)
 
     def thresholds(self, spec: OpticalComponentSpec) -> tuple[float, tuple[float, float]]:
@@ -127,60 +221,131 @@ class SkySource(Source):
             return SkyState.FLAT
         return SkyState.DAY
 
-    def emission(self, spec: OpticalComponentSpec, position: str | None, env: "Environment") -> str | None:
-        state = self.sky_state(spec, env.sun_alt_deg)
-        return None if state is None else f"{SourceFamily.SKY}.{state}"
+    def emission(self, spec, values):
+        state = values.get(None)
+        return UNDEFINED if state is None else f"{SourceFamily.SKY}.{state}"
+
+    def validate(self, spec, components):
+        extra = spec.model_extra or {}
+        problems: list[str] = []
+        science = _number(extra, "science_sun_alt", problems)
+        flat = extra.get("flat_sun_alt")
+        lo = hi = None
+        if flat is not None:
+            if not isinstance(flat, (list, tuple)) or len(flat) != 2 or any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in flat):
+                problems.append(f"flat_sun_alt must be [min, max] in degrees, got {flat!r}")
+            else:
+                lo, hi = float(flat[0]), float(flat[1])
+        if problems:
+            return problems
+        science = self.science_sun_alt if science is None else science
+        lo = self.flat_sun_alt[0] if lo is None else lo
+        hi = self.flat_sun_alt[1] if hi is None else hi
+        if not science < lo <= hi:
+            problems.append(f"sun-altitude thresholds must satisfy science_sun_alt < flat min <= flat max, got {science} / {lo} / {hi}")
+        return problems
 
 
-# --- selectors -------------------------------------------------------------------------------
+# --- selectors: a position axis that routes or blocks --------------------------------------------
+
+
+@dataclass(frozen=True)
+class Aspect:
+    """A secondary axis of a selector that *emits* when ``on`` (the calibrator lamp of an Alpaca
+    ICoverCalibrator). Unreported ⇒ assumed ``off``; unusable telemetry ⇒ undefined."""
+
+    name: str
+    emits: str
+    on: str = "on"
+    off: str = "off"
+
+    @property
+    def positions(self) -> frozenset[str]:
+        return frozenset({self.on, self.off})
+
+    def axis(self) -> Axis:
+        return Axis(self.name, self.positions, default=self.off)
 
 
 @dataclass(frozen=True)
 class Selector(Kind):
-    """A switch. ``intrinsic_positions`` are known without config (a cover: open/close);
-    ``dark_positions`` block the light (the closed cover, the closed dome). Aspects are the
-    independent emitting axes."""
+    """A switch. Its physical shape follows from the config, the table is the same idea for all:
+
+    - ``inputs: {pos: X}`` ⇒ **fan-in**: the position picks which input passes (M4/M5, dome);
+    - ``gate=True`` ⇒ **gate**: one input, one output, a position transmits or blocks (cover);
+    - otherwise ⇒ **output ports**: one input, a port per position, the position picks the output (M3).
+
+    ``intrinsic_positions`` are known without config (a cover: open/close); ``dark_positions``
+    block; ``fan_in_positions`` fixes the authored input names when the kind requires it (dome);
+    ``derive_position`` computes the position from the environment when no telemetry names it.
+    """
 
     archetype: Archetype = field(default=Archetype.SELECTOR, init=False)
     intrinsic_positions: frozenset[str] = frozenset()
     dark_positions: frozenset[str] = frozenset()
     aspects: tuple[Aspect, ...] = ()
-    gate: bool = False  #: one input, one output regardless of config (cover, dark slide)
-    fan_in_positions: frozenset[str] | None = None  #: allowed ``inputs:`` keys when the kind fixes them (dome); None = free
+    gate: bool = False
+    fan_in_positions: frozenset[str] | None = None
+    derive_position: Deriver | None = None
 
-    def aspect(self, name: str) -> Aspect | None:
-        return next((a for a in self.aspects if a.name == name), None)
+    # -- structure
 
-    def declared_positions(self, spec: OpticalComponentSpec) -> frozenset[str] | None:
-        declared = super().declared_positions(spec)
-        if declared is None:
-            declared = frozenset()
-        if spec.optics is not None and spec.optics.is_fan_in:
-            declared = declared | frozenset(spec.optics.inputs or {})
-        declared = declared | self.intrinsic_positions
-        return declared or None
+    def is_fan_in(self, spec: OpticalComponentSpec) -> bool:
+        return spec.optics is not None and spec.optics.is_fan_in
 
     def shape(self, spec: OpticalComponentSpec) -> SelectorShape:
-        if spec.optics is not None and spec.optics.is_fan_in:
+        if self.is_fan_in(spec):
             return SelectorShape.FAN_IN
-        if self.gate:
-            return SelectorShape.GATE
-        return SelectorShape.OUTPUT_PORTS
+        return SelectorShape.GATE if self.gate else SelectorShape.OUTPUT_PORTS
+
+    def positions(self, spec: OpticalComponentSpec) -> frozenset[str]:
+        declared = frozenset(spec.positions) if spec.positions is not None else frozenset()
+        if self.is_fan_in(spec):
+            declared |= frozenset(spec.optics.inputs or {})
+        return declared | self.intrinsic_positions
 
     def blocks(self, spec: OpticalComponentSpec, position: str) -> bool:
         if position in self.dark_positions:
             return True
-        # config may mark a position as blocking: `positions: {closed: {slot: 7, dark: true}}`
         if spec.positions is not None and position in spec.positions:
             return bool((spec.positions[position].model_extra or {}).get("dark", False))
         return False
 
-    def derived_position(
-        self, spec: OpticalComponentSpec, components: Mapping[str, OpticalComponentSpec], env: "Environment"
-    ) -> str | None:
-        """Position computed from the environment when no telemetry is given for the selector
-        itself. ``None`` = cannot derive → the selector is ``undefined`` without telemetry."""
-        return None
+    def inputs(self, spec):
+        return frozenset(spec.optics.inputs or {}) if self.is_fan_in(spec) else frozenset({IN})
+
+    def outputs(self, spec):
+        if self.is_fan_in(spec) or self.gate:
+            return frozenset({OUT})
+        return self.positions(spec)
+
+    def aspect(self, name: str) -> Aspect | None:
+        return next((a for a in self.aspects if a.name == name), None)
+
+    def axes(self, spec):
+        return (Axis(None, self.positions(spec), derive=self.derive_position), *(a.axis() for a in self.aspects))
+
+    # -- the table
+
+    def transfer(self, spec, values):
+        position = values.get(None)
+        own: set[Signal] = set()  # what the selector emits by itself, independent of its position
+        for aspect in self.aspects:
+            a = values.get(aspect.name, aspect.off)
+            if a is None:
+                own.add(Emit(UNDEFINED))
+            elif a == aspect.on:
+                own.add(Emit(aspect.emits))
+        outputs = self.outputs(spec)
+        if position is None:
+            return {port: frozenset(own | {Emit(UNDEFINED)}) for port in outputs}
+        if self.is_fan_in(spec):
+            through = {Transmit(position)} if position in self.inputs(spec) else set()
+        elif self.gate:
+            through = set() if self.blocks(spec, position) else {Transmit(IN)}
+        else:
+            return {port: frozenset({Transmit(IN)}) if port == position else DARK_OUT for port in outputs}
+        return {OUT: frozenset(through | own) or DARK_OUT}
 
 
 def _angular_distance(a: float, b: float) -> float:
@@ -190,44 +355,60 @@ def _angular_distance(a: float, b: float) -> float:
 
 @dataclass(frozen=True)
 class DomeKind(Selector):
-    """The dome is a *derived* selector between the sky and the flat screen: shutter closed ⇒
-    dark; shutter open and mount + dome pointed at the screen (``domeflat_az`` on the dome,
-    ``domeflat_az_offset`` / ``domeflat_alt`` on the mount — values already in config) ⇒
-    ``flat``; otherwise ``open``. The input names are fixed by the kind so that the derivation
-    and the authored ``inputs:`` agree."""
+    """The dome is a *derived* fan-in selector between the sky and the flat screen: shutter
+    closed ⇒ ``closed`` (dark); open and mount + dome at the screen (``domeflat_az`` on the dome,
+    ``domeflat_az_offset`` / ``domeflat_alt`` on the mount — values already in config) ⇒ ``flat``;
+    otherwise ``open``. Undecidable (no shutter state; pointing unknown or no altitude target
+    while a ``flat`` input exists) ⇒ undefined. Input names are fixed by the kind so that the
+    derivation and the authored ``inputs:`` agree."""
 
+    OPEN: ClassVar[str] = "open"
+    FLAT: ClassVar[str] = "flat"
+    CLOSED: ClassVar[str] = "closed"
+    DEFAULT_TOLERANCE_DEG: ClassVar[float] = 3.0
+
+    name: str = "dome"
     intrinsic_positions: frozenset[str] = frozenset({"closed"})
     dark_positions: frozenset[str] = frozenset({"closed"})
     fan_in_positions: frozenset[str] | None = frozenset({"open", "flat"})
-    open_input: str = "open"
-    flat_input: str = "flat"
-    default_tolerance_deg: float = 3.0
 
-    def derived_position(
-        self, spec: OpticalComponentSpec, components: Mapping[str, OpticalComponentSpec], env: "Environment"
-    ) -> str | None:
+    def axes(self, spec):
+        return (Axis(None, self.positions(spec), derive=self.derived_position), *(a.axis() for a in self.aspects))
+
+    def derived_position(self, spec, components, env: Environment) -> str | None:
         if env.dome_shutter_open is None:
             return None
         if not env.dome_shutter_open:
-            return "closed"
-        inputs = (spec.optics.inputs or {}) if spec.optics is not None else {}
-        if self.flat_input not in inputs:
-            return self.open_input
+            return self.CLOSED
+        if self.FLAT not in self.inputs(spec):
+            return self.OPEN
         extra = spec.model_extra or {}
         domeflat_az = extra.get("domeflat_az")
         mount = next((c for c in components.values() if c.kind == "telescope"), None)
         mount_extra = (mount.model_extra or {}) if mount is not None else {}
         if domeflat_az is None or env.dome_az_deg is None or env.mount_az_deg is None or env.mount_alt_deg is None:
             return None
-        tol = float(extra.get("slew_tolerance", self.default_tolerance_deg))
+        tol = float(extra.get("slew_tolerance", self.DEFAULT_TOLERANCE_DEG))
         mount_flat_az = float(domeflat_az) + float(mount_extra.get("domeflat_az_offset", 0.0))
-        at_screen = _angular_distance(env.dome_az_deg, float(domeflat_az)) <= tol and _angular_distance(
-            env.mount_az_deg, mount_flat_az
-        ) <= tol
+        at_screen_az = _angular_distance(env.dome_az_deg, float(domeflat_az)) <= tol and _angular_distance(env.mount_az_deg, mount_flat_az) <= tol
+        if not at_screen_az:
+            return self.OPEN
         flat_alt = mount_extra.get("domeflat_alt")
-        if at_screen and flat_alt is not None:
-            at_screen = abs(env.mount_alt_deg - float(flat_alt)) <= tol
-        return self.flat_input if at_screen else self.open_input
+        if flat_alt is None:
+            return None  # at the screen azimuth but no altitude target configured: flat or open is undecidable
+        return self.FLAT if abs(env.mount_alt_deg - float(flat_alt)) <= tol else self.OPEN
+
+    def validate(self, spec, components):
+        problems: list[str] = []
+        extra = spec.model_extra or {}
+        _number(extra, "domeflat_az", problems)
+        _number(extra, "slew_tolerance", problems)
+        mount = next((c for c in components.values() if c.kind == "telescope"), None)
+        if mount is not None:
+            mount_extra = mount.model_extra or {}
+            _number(mount_extra, "domeflat_az_offset", problems)
+            _number(mount_extra, "domeflat_alt", problems)
+        return problems
 
 
 # --- the rest ----------------------------------------------------------------------------------
@@ -235,13 +416,19 @@ class DomeKind(Selector):
 
 @dataclass(frozen=True)
 class Splitter(Kind):
+    """One input, every output at once. Ports are whatever downstream names, unless the config
+    declares ``positions:``."""
+
     archetype: Archetype = field(default=Archetype.SPLITTER, init=False)
+
+    def outputs(self, spec):
+        return frozenset(spec.positions) if spec.positions is not None else None
 
 
 @dataclass(frozen=True)
 class Passive(Kind):
-    """Transmits unchanged. ``promotable`` kinds become a GATE selector when their config declares
-    ``positions:`` with at least one ``dark: true`` position (a filterwheel with a dark slide)."""
+    """Transmits unchanged. ``promotable`` kinds become a gate selector when their config declares
+    ``positions:`` with at least one ``dark: true`` position (a filter wheel with a dark slide)."""
 
     archetype: Archetype = field(default=Archetype.PASSIVE, init=False)
     promotable: bool = False
@@ -249,9 +436,7 @@ class Passive(Kind):
     def promoted(self, spec: OpticalComponentSpec) -> Selector | None:
         if not self.promotable or spec.positions is None:
             return None
-        dark = frozenset(
-            sym for sym in spec.positions if bool((spec.positions[sym].model_extra or {}).get("dark", False))
-        )
+        dark = frozenset(sym for sym in spec.positions if bool((spec.positions[sym].model_extra or {}).get("dark", False)))
         if not dark:
             return None
         return Selector(name=self.name, gate=True, dark_positions=dark)
@@ -260,6 +445,12 @@ class Passive(Kind):
 @dataclass(frozen=True)
 class Detector(Kind):
     archetype: Archetype = field(default=Archetype.DETECTOR, init=False)
+
+    def outputs(self, spec):
+        return frozenset()
+
+    def transfer(self, spec, values):
+        return {}
 
 
 # --- registry ----------------------------------------------------------------------------------
@@ -306,11 +497,11 @@ COVER_CALIBRATOR = Selector(
 
 def default_registry() -> KindRegistry:
     reg = KindRegistry()
-    reg.register(SkySource(name="sky"))
+    reg.register(SkySource())
     reg.register(ConstantSource(name="flatscreen", emits=str(SourceFamily.FLATSCREEN)))
     reg.register(ConstantSource(name="lamp", emits=str(SourceFamily.LAMP), switchable=True))
     reg.register(ConstantSource(name="beamdump", emits=DARK))
-    reg.register(DomeKind(name="dome"))
+    reg.register(DomeKind())
     reg.register(COVER_CALIBRATOR)
     reg.register(Selector(name="tertiaryOCA"), "tertiary", "mirror")
     reg.register(Splitter(name="splitter"))

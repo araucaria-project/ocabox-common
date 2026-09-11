@@ -37,6 +37,19 @@ class TestStaticRoutes(unittest.TestCase):
         self.assertIn({"m4": "park"}, [dict(r.positions) for r in routes if r.terminal == "m4"])
 
 
+class TestMultiPortRoutes(unittest.TestCase):
+
+    def test_one_transmitting_route_per_allowed_port_and_dark_only_outside(self):
+        from test.optics.test_sees import MULTIPORT
+        g = parse_graph(MULTIPORT)
+        routes = enumerate_routes(g, "wide")
+        light = sorted(r.positions["m3"] for r in routes if "sky.science" in r.classes)
+        dark = sorted(r.positions["m3"] for r in routes if r.classes == frozenset({"dark"}))
+        self.assertEqual((light, dark), (["a", "b"], ["c"]))
+        compiled = compile_telescope(g)  # every route replays through sees()
+        self.assertEqual(sorted(r.positions["m3"] for r in compiled.routes if r.detector == "wide" and r.function == "object"), ["a", "b"])
+
+
 class TestCompile(unittest.TestCase):
 
     def test_route_table_covers_every_alternative(self):

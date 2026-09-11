@@ -15,13 +15,17 @@ epic araucaria-project/ocabox-server#27; this package: araucaria-project/ocabox-
 
 from obcom.optics.check import UnknownFunction, check, check_result, resolve
 from obcom.optics.compile import CompileError, authored_hash, compile_observatory, compile_telescope
-from obcom.optics.graph import Edge, GraphInvalid, Node, OpticalGraph, parse_graph, validate_graph
+from obcom.optics.graph import Feed, GraphInvalid, Node, OpticalGraph, parse_graph, validate_graph
 from obcom.optics.kinds import (
     DEFAULT_REGISTRY,
+    IN,
+    OUT,
     Aspect,
+    Axis,
     ConstantSource,
     Detector,
     DomeKind,
+    Emit,
     Kind,
     KindRegistry,
     Passive,
@@ -30,19 +34,21 @@ from obcom.optics.kinds import (
     SkySource,
     Source,
     Splitter,
+    Transmit,
     default_registry,
 )
 from obcom.optics.routes import StaticRoute, enumerate_routes, routes_for_goal
-from obcom.optics.sees import available_classes, sees
-from obcom.optics.state import Hold, ProvenState, Unknown, proven_position
+from obcom.optics.sees import available_classes, outgoing, sees
+from obcom.optics.state import Hold, ProvenState, Resolved, Unknown, proven_position, resolve_axes
 
 __all__ = [
-    "parse_graph", "validate_graph", "GraphInvalid", "OpticalGraph", "Node", "Edge",
-    "sees", "available_classes",
+    "parse_graph", "validate_graph", "GraphInvalid", "OpticalGraph", "Node", "Feed",
+    "sees", "available_classes", "outgoing",
     "check", "check_result", "resolve", "UnknownFunction",
     "compile_telescope", "compile_observatory", "authored_hash", "CompileError",
     "enumerate_routes", "routes_for_goal", "StaticRoute",
-    "ProvenState", "Hold", "Unknown", "proven_position",
+    "ProvenState", "Hold", "Unknown", "Resolved", "proven_position", "resolve_axes",
     "KindRegistry", "DEFAULT_REGISTRY", "default_registry", "Kind", "Source", "ConstantSource", "SkySource",
-    "Selector", "SelectorShape", "Aspect", "DomeKind", "Splitter", "Passive", "Detector",
+    "Selector", "SelectorShape", "Aspect", "Axis", "DomeKind", "Splitter", "Passive", "Detector",
+    "Transmit", "Emit", "IN", "OUT",
 ]

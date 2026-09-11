@@ -31,10 +31,10 @@ from datamodels.optics import (
 )
 
 from obcom.optics.graph import OpticalGraph
-from obcom.optics.kinds import Selector, Source
+from obcom.optics.kinds import Source
 from obcom.optics.routes import StaticRoute, enumerate_routes, routes_for_goal
 from obcom.optics.sees import available_classes, sees, source_emission
-from obcom.optics.state import ProvenState, Unknown, proven_position
+from obcom.optics.state import ProvenState, resolve_axes
 
 
 class UnknownFunction(LookupError):
@@ -133,21 +133,17 @@ def _keys(routes: Iterable[StaticRoute], alternatives: Iterable[GoalSpec]) -> se
 
 
 def _proven_map(graph: OpticalGraph, state: ProvenState, keys: Iterable[str]) -> tuple[dict[str, str | None], frozenset[str]]:
-    """StateKey → proven symbol, ``None`` for undefined. An aspect nobody reports is taken as
-    ``off`` (nothing asserted, nothing emitted) and listed in the returned ``assumed`` set so that
-    it is never reported as *proven*."""
+    """StateKey → current axis value, ``None`` for undefined. Axes running on their kind's default
+    (an unreported aspect is ``off``) are listed in ``assumed`` so they are never reported as
+    *proven*."""
     result: dict[str, str | None] = {}
     assumed: set[str] = set()
     for key in sorted(keys):
         component, aspect = split_state_key(key)
-        node = graph.nodes[component]
-        pos = proven_position(graph, state, node, aspect)
-        if pos is Unknown.ABSENT and aspect is not None and isinstance(node.kind, Selector):
-            asp = node.kind.aspect(aspect)
-            result[key] = asp.off if asp is not None else None
+        resolved = resolve_axes(graph, state, graph.nodes[component]).get(aspect)
+        result[key] = None if resolved is None else resolved.value
+        if resolved is not None and resolved.assumed:
             assumed.add(key)
-        else:
-            result[key] = None if isinstance(pos, Unknown) else pos
     return result, frozenset(assumed)
 
 
