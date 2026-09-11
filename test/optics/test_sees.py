@@ -185,6 +185,12 @@ class TestDerivedDome(unittest.TestCase):
         away = state.with_environment(mount_az_deg=100.0, dome_az_deg=100.0)
         self.assertEqual(proven_position(g, away, g.nodes["dome"]), "open")
 
+    def test_away_from_the_screen_is_open_even_without_altitude(self):
+        state = ProvenState.build(self.base, sun_alt_deg=-30, dome_shutter_open=True, dome_az_deg=120.0, mount_az_deg=120.0)
+        self.assertEqual(proven_position(self.g, state, self.g.nodes["dome"]), "open")
+        at_screen = state.with_environment(dome_az_deg=49.0, mount_az_deg=229.0)
+        self.assertIsNone(proven_position(self.g, at_screen, self.g.nodes["dome"]))  # here the altitude decides, and it is missing
+
     def test_missing_inputs_are_undefined(self):
         self.assertIsNone(proven_position(self.g, ProvenState.build(self.base), self.g.nodes["dome"]))
         shutter_only = ProvenState.build(self.base, dome_shutter_open=True)

@@ -116,6 +116,11 @@ class TestLoadTimeValidation(unittest.TestCase):
         comps = jk15(guider={"kind": "camera", "optics": {"from": {"tertiary": "andor"}}})
         self.assertInvalid(comps, "duplicate_from", component="guider")
 
+    def test_a_lamp_has_one_output_but_ambient_sources_have_many(self):
+        comps = {**BESO, "second": {"kind": "spectrograph", "optics": {"from": "thar_lamp"}}}
+        self.assertInvalid(comps, "duplicate_from", component="second")
+        parse_graph({**TMMT, "cam_d": {"kind": "camera", "optics": {"from": "sky"}}})  # the sky feeds any number of apertures
+
     def test_duplicate_passive_edge_on_single_output(self):
         comps = jk15(extra={"kind": "camera", "optics": {"from": "filterwheel"}})
         self.assertInvalid(comps, "duplicate_from")

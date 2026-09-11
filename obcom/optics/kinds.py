@@ -167,6 +167,11 @@ class Source(Kind):
     def inputs(self, spec):
         return frozenset()
 
+    def ambient(self, spec: OpticalComponentSpec) -> bool:
+        """Ambient light fills every aperture at once (sky, screen, the dark of a dump), so several
+        components may hang on it without a splitter; a lamp has one physical output."""
+        return True
+
     def possible_classes(self, spec: OpticalComponentSpec) -> frozenset[str]:
         """Every light class this source can ever emit (static route enumeration)."""
         raise NotImplementedError
@@ -187,6 +192,9 @@ class ConstantSource(Source):
 
     emits: str = ""
     switchable: bool = False
+
+    def ambient(self, spec):
+        return not self.switchable
 
     def axes(self, spec):
         return (Axis(None, ("off", "on"), actuated=False),) if self.switchable else ()
@@ -407,16 +415,16 @@ class DomeKind(Selector):
         domeflat_az = extra.get("domeflat_az")
         mount = next((c for c in components.values() if c.kind == "telescope"), None)
         mount_extra = (mount.model_extra or {}) if mount is not None else {}
-        if domeflat_az is None or env.dome_az_deg is None or env.mount_az_deg is None or env.mount_alt_deg is None:
+        if domeflat_az is None or env.dome_az_deg is None or env.mount_az_deg is None:
             return None
         tol = float(extra.get("slew_tolerance", self.DEFAULT_TOLERANCE_DEG))
         mount_flat_az = float(domeflat_az) + float(mount_extra.get("domeflat_az_offset", 0.0))
         at_screen_az = _angular_distance(env.dome_az_deg, float(domeflat_az)) <= tol and _angular_distance(env.mount_az_deg, mount_flat_az) <= tol
         if not at_screen_az:
-            return self.OPEN
+            return self.OPEN  # demonstrably away from the screen: the altitude does not matter
         flat_alt = mount_extra.get("domeflat_alt")
-        if flat_alt is None:
-            return None  # at the screen azimuth but no altitude target configured: flat or open is undecidable
+        if flat_alt is None or env.mount_alt_deg is None:
+            return None  # at the screen azimuth: flat or open is undecidable without the altitude target and readback
         return self.FLAT if abs(env.mount_alt_deg - float(flat_alt)) <= tol else self.OPEN
 
     def validate(self, spec, components):

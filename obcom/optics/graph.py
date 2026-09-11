@@ -395,8 +395,9 @@ def _check_duplicates(nodes: dict[str, Node], errors: list[ConfigError]) -> None
                 for port in feed.ports:
                     by_output[(feed.upstream, port)].append(node.name)
     for (upstream, port), downs in by_output.items():
-        if len(downs) < 2 or nodes[upstream].archetype in (Archetype.SPLITTER, Archetype.SOURCE):
-            continue  # a splitter feeds several outputs by design; a source (sky, screen) is ambient light
+        up = nodes[upstream]
+        if len(downs) < 2 or up.archetype == Archetype.SPLITTER or (isinstance(up.kind, Source) and up.kind.ambient(up.spec)):
+            continue  # a splitter feeds several outputs by design; ambient light (sky, screen) fills every aperture
         where = upstream if port == OUT else f"{upstream}:{port}"
         for d in downs:
             _err(errors, "duplicate_from", f"{d}: {', '.join(downs)} all hang on {where} — one output feeds one component; insert a splitter", d, f"{d}.optics")
