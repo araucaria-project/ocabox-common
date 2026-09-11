@@ -69,12 +69,14 @@ def compile_observatory(
 
 
 def authored_hash(telescopes: Mapping[str, Mapping | TelescopeOpticsSpec]) -> str:
-    """``sha256:<hex>`` of the canonical JSON of the authored input — what CI compares to detect drift."""
+    """``sha256:<hex>`` of the JSON of the authored input, *in authored order* — what CI compares to
+    detect drift. Order is semantic (position vocabularies, route enumeration, the preference
+    tie-break), so reordering ``positions:`` is a change."""
     canonical = {
         name: (_as_spec(c) if not isinstance(c, TelescopeOpticsSpec) else c).model_dump(by_alias=True, exclude_none=True)
         for name, c in telescopes.items()
     }
-    blob = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    blob = json.dumps(canonical, separators=(",", ":"), ensure_ascii=False, default=str)
     return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
@@ -131,8 +133,9 @@ def _source_precondition(graph: OpticalGraph, terminal: str, see: str) -> dict[s
 def _verify(graph: OpticalGraph, route: Route, terminal: str) -> None:
     state = ProvenState.build({**route.positions, **_source_precondition(graph, terminal, route.see)})
     now = sees(graph, state, route.detector)
-    if not now or any(r.light_class != route.see for r in now):
+    if len(now) != 1 or next(iter(now)).light_class != route.see or next(iter(now)).terminal != terminal:
         seen = ", ".join(sorted(f"{r.light_class}@{r.terminal}" for r in now)) or "nothing"
         raise CompileError(
-            f"route {route.detector}.{route.function}[{route.alternative}#{route.realization}] with {dict(route.positions)} should show {route.see!r} but sees {seen}"
+            f"route {route.detector}.{route.function}[{route.alternative}#{route.realization}] with {dict(route.positions)} "
+            f"should show exactly {route.see!r}@{terminal} but sees {seen}"
         )

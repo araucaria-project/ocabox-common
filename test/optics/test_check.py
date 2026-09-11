@@ -2,7 +2,7 @@ import unittest
 
 from datamodels.optics import Active, Collision, Impossible, Settable
 
-from obcom.optics import Hold, ProvenState, UnknownFunction, check, check_result, parse_graph, resolve
+from obcom.optics import DEFAULT_REGISTRY, Aspect, Hold, ProvenState, Selector, UnknownFunction, check, check_result, parse_graph, resolve
 from test.optics.fixtures import BESO, TMMT, jk15, night
 
 
@@ -43,6 +43,17 @@ class TestCheckJk15(unittest.TestCase):
         zero = check(self.g, state, "camera", "zero")
         self.assertIsInstance(zero, Settable)
         self.assertEqual(zero.moves, {"tertiary": "beso"})  # the only single move that yields a clean dark
+
+    def test_two_terminals_of_the_goal_class_are_contamination_not_active(self):
+        reg = DEFAULT_REGISTRY.copy()
+        reg.register(Selector(name="tertiaryOCA", aspects=(Aspect(name="calibrator", emits="lamp"),)), "tertiary")
+        camera = {**jk15()["camera"], "paths": {**jk15()["camera"]["paths"], "lampflat": "lamp"}}
+        g = parse_graph(jk15(camera=camera), registry=reg)
+        both = night(covercalibrator="close", **{"covercalibrator.calibrator": "on", "tertiary.calibrator": "on"})
+        verdict = check(g, both, "camera", "lampflat")
+        self.assertIsInstance(verdict, Settable)  # lamp @ covercalibrator and lamp @ tertiary at once: same class, still two things
+        self.assertEqual(len(verdict.moves), 1)  # one move separates them (M3 away, or its lamp off)
+        self.assertIsInstance(check(g, both.with_positions({"tertiary.calibrator": "off"}), "camera", "lampflat"), Active)
 
     def test_idle_branch_dark_is_active(self):
         self.assertIsInstance(check(self.g, night(tertiary="beso"), "camera", "dark"), Active)

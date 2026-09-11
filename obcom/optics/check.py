@@ -152,8 +152,9 @@ def _collateral(graph: OpticalGraph, state: ProvenState, others_now: Mapping[str
 
 
 def _is_active(now: frozenset[SeesRecord], alt: GoalSpec, proven: Mapping[str, str | None]) -> bool:
-    """Active = the detector sees the goal class and *nothing else*, through the pinned ``via``."""
-    if not now or any(r.light_class != alt.see for r in now):
+    """Active = the detector sees the goal class from *one* terminal and nothing else, through the
+    pinned ``via`` — two lamps of the same class are contamination, as in route enumeration."""
+    if len(now) != 1 or any(r.light_class != alt.see for r in now):
         return False
     for record in now:
         on_path = {record.terminal, *record.via}

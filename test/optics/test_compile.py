@@ -96,6 +96,15 @@ class TestCompile(unittest.TestCase):
             _verify(g, bogus, "sky")
         self.assertIn("dark@tertiary", str(cm.exception))
 
+    def test_verification_requires_the_route_terminal(self):
+        g = parse_graph(jk15())
+        cover_lamp = Route(detector="camera", function="domeflat", alternative=0, see="lamp",
+                           positions={"tertiary": "andor", "covercalibrator": "close", "covercalibrator.calibrator": "on"})
+        _verify(g, cover_lamp, "covercalibrator")
+        with self.assertRaises(CompileError) as cm:
+            _verify(g, cover_lamp, "flatscreen")  # right class, wrong provenance
+        self.assertIn("'lamp'@flatscreen but sees lamp@covercalibrator", str(cm.exception))
+
     def test_routes_to_stateful_sources_verify_with_the_source_precondition(self):
         compiled = compile_telescope(parse_graph(BESO))  # arc and flat terminate at switchable lamps, object at the sky
         self.assertEqual({(r.function, r.see) for r in compiled.routes if r.detector == "beso"} >= {("arc", "lamp"), ("flat", "lamp"), ("object", "sky.science")}, True)
@@ -116,6 +125,12 @@ class TestCompile(unittest.TestCase):
         self.assertTrue(compiled.generated_from.startswith("sha256:"))
         self.assertEqual(compiled.generated_from, authored_hash(telescopes))
         self.assertEqual(OpticsCompiled.model_validate_json(compiled.model_dump_json(by_alias=True)), compiled)
+
+    def test_authored_hash_sees_a_reordered_vocabulary_as_a_change(self):
+        base = jk15()
+        swapped = jk15(tertiary={**base["tertiary"], "positions": dict(reversed(list(base["tertiary"]["positions"].items())))})
+        self.assertEqual(authored_hash({"jk15": jk15()}), authored_hash({"jk15": base}))
+        self.assertNotEqual(authored_hash({"jk15": base}), authored_hash({"jk15": swapped}))  # order is semantic: the tie-break changes
 
     def test_hash_tracks_the_authored_input_only(self):
         a = authored_hash({"jk15": jk15()})
