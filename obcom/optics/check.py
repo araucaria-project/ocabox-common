@@ -27,6 +27,7 @@ from datamodels.optics import (
     SeesRecord,
     Settable,
     Verdict,
+    VerdictKind,
     split_state_key,
 )
 
@@ -51,7 +52,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
     available = available_classes(graph, state)
     routes = enumerate_routes(graph, detector)
     alternatives = node.paths.alternatives(function)
-    proven, assumed = _proven_map(graph, state, _keys(routes, alternatives))
+    proven = _proven_map(graph, state, _keys(routes, alternatives))
     others = tuple(d for d in graph.detectors if d != detector)
     others_now = {d: frozenset(r.light_class for r in sees(graph, state, d)) for d in others}
 
@@ -66,10 +67,8 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
         applicable = True
         if _is_active(now, alt, proven):
             on_path = {c for r in now for c in (r.terminal, *r.via)}
-            positions = {
-                k: v for k, v in proven.items() if v is not None and k not in assumed and split_state_key(k)[0] in on_path
-            }
-            return Active(see=alt.see, positions=positions)
+            positions = {k: v for k, v in proven.items() if v is not None and split_state_key(k)[0] in on_path}
+            return Active(kind=VerdictKind.ACTIVE, see=alt.see, positions=positions)
 
         feasible: list[tuple[tuple[int, int, int, int], StaticRoute, dict[str, str]]] = []
         for index, route in enumerate(routes_for_goal(routes, alt)):
@@ -89,7 +88,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
             feasible.append(((len(moves), collateral, len(route.via), index), route, moves))
         if feasible:
             _, route, moves = min(feasible, key=lambda t: t[0])
-            return Settable(see=alt.see, positions=dict(route.positions), moves=moves)
+            return Settable(kind=VerdictKind.SETTABLE, see=alt.see, positions=dict(route.positions), moves=moves)
 
     if collision is not None:
         return collision
@@ -104,7 +103,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
         reason = f"no route to {detector}.{function} can be set now"
     if undefined_at:
         reason += f"; undefined: {', '.join(undefined_at)}"
-    return Impossible(reason=reason, unavailable=unavailable, undefined_at=undefined_at)
+    return Impossible(kind=VerdictKind.IMPOSSIBLE, reason=reason, unavailable=unavailable, undefined_at=undefined_at)
 
 
 def check_result(graph: OpticalGraph, state: ProvenState, detector: str, function: str) -> CheckResult:
@@ -132,19 +131,14 @@ def _keys(routes: Iterable[StaticRoute], alternatives: Iterable[GoalSpec]) -> se
     return keys
 
 
-def _proven_map(graph: OpticalGraph, state: ProvenState, keys: Iterable[str]) -> tuple[dict[str, str | None], frozenset[str]]:
-    """StateKey → current axis value, ``None`` for undefined. Axes running on their kind's default
-    (an unreported aspect is ``off``) are listed in ``assumed`` so they are never reported as
-    *proven*."""
+def _proven_map(graph: OpticalGraph, state: ProvenState, keys: Iterable[str]) -> dict[str, str | None]:
+    """StateKey → current axis value, ``None`` for undefined."""
     result: dict[str, str | None] = {}
-    assumed: set[str] = set()
     for key in sorted(keys):
         component, aspect = split_state_key(key)
         resolved = resolve_axes(graph, state, graph.nodes[component]).get(aspect)
         result[key] = None if resolved is None else resolved.value
-        if resolved is not None and resolved.assumed:
-            assumed.add(key)
-    return result, frozenset(assumed)
+    return result
 
 
 def _collateral(graph: OpticalGraph, state: ProvenState, others_now: Mapping[str, frozenset[str]], route: StaticRoute) -> int:
@@ -185,6 +179,7 @@ def _collision(state: ProvenState, route: StaticRoute, moves: Mapping[str, str],
         if hold is not None and hold.position != required:
             by = f" by {hold.holder}" if hold.holder else ""
             return Collision(
+                kind=VerdictKind.COLLISION,
                 selector=key,
                 required=required,
                 held=hold.position,

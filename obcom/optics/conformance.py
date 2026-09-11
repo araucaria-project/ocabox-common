@@ -192,19 +192,19 @@ SCENARIOS: tuple[Scenario, ...] = (
         "jk15 dome derived from environment: at the flat screen",
         "No dome telemetry given as a selector state; shutter open, dome at domeflat_az, mount at domeflat_az+offset and domeflat_alt ⇒ position flat ⇒ flatscreen.",
         JK15_WITH_MOUNT,
-        ProvenState.build({"tertiary": "andor", "covercalibrator": "open"}, sun_alt_deg=20.0, dome_shutter_open=True, dome_az_deg=49.0, mount_az_deg=229.0, mount_alt_deg=15.0),
+        ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off"}, sun_alt_deg=20.0, dome_shutter_open=True, dome_az_deg=49.0, mount_az_deg=229.0, mount_alt_deg=15.0),
         ("camera",), (("camera", "domeflat"), ("camera", "object")),
     ),
     Scenario(
         "jk15 dome derived from environment: shutter closed",
         "Shutter closed ⇒ the dome is a dark terminal for every detector.",
-        JK15_WITH_MOUNT, ProvenState.build({"tertiary": "andor", "covercalibrator": "open"}, sun_alt_deg=-30.0, dome_shutter_open=False),
+        JK15_WITH_MOUNT, ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off"}, sun_alt_deg=-30.0, dome_shutter_open=False),
         ("camera", "guider_beso"), (("camera", "dark"), ("camera", "object")),
     ),
     Scenario(
         "jk15 dome derived from environment: pointing unknown",
         "Shutter open but no azimuths: open or flat cannot be told apart ⇒ undefined @ dome.",
-        JK15_WITH_MOUNT, ProvenState.build({"tertiary": "andor", "covercalibrator": "open"}, sun_alt_deg=-30.0, dome_shutter_open=True),
+        JK15_WITH_MOUNT, ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off"}, sun_alt_deg=-30.0, dome_shutter_open=True),
         ("camera",), (("camera", "object"),),
     ),
     Scenario(
@@ -216,19 +216,19 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         "beso ThAr arc",
         "M4 on calib, M5 on thar: the spectrograph sees the ThAr lamp; the imaging camera on the other M3 port sees dark @ tertiary.",
-        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "calib", "m5": "thar"}, sun_alt_deg=-30.0),
+        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "calib", "m5": "thar", "thar_lamp": "on"}, sun_alt_deg=-30.0),
         ("beso", "camera"), (("beso", "arc"), ("beso", "flat"), ("beso", "object"), ("camera", "dark")),
     ),
     Scenario(
         "beso on sky",
         "M4 on sky through the fibre: the spectrograph sees sky.science through tertiary and fibre.",
-        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "sky", "m5": "thar"}, sun_alt_deg=-30.0),
+        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "sky", "m5": "thar", "thar_lamp": "on"}, sun_alt_deg=-30.0),
         ("beso",), (("beso", "object"), ("beso", "arc")),
     ),
     Scenario(
         "beso M4 parked",
         "A declared position that is no input transmits nothing: dark @ m4.",
-        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "park", "m5": "thar"}, sun_alt_deg=-30.0),
+        BESO, ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "park", "m5": "thar", "thar_lamp": "on"}, sun_alt_deg=-30.0),
         ("beso",), (("beso", "dark"), ("beso", "object")),
     ),
     Scenario(

@@ -17,11 +17,11 @@ class TestCheckJk15(unittest.TestCase):
         self.assertEqual(verdict.see, "sky.science")
         self.assertEqual(verdict.positions, {"dome": "open", "covercalibrator": "open", "covercalibrator.calibrator": "off", "tertiary": "andor"})
 
-    def test_active_never_reports_an_assumed_aspect_as_proven(self):
+    def test_unreported_aspect_is_undefined_never_assumed_off(self):
         state = ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "dome": "open"}, sun_alt_deg=-30)
         verdict = check(self.g, state, "camera", "object")
-        self.assertIsInstance(verdict, Active)
-        self.assertNotIn("covercalibrator.calibrator", verdict.positions)
+        self.assertIsInstance(verdict, Settable)  # commanding the lamp off is the move that proves it
+        self.assertEqual(verdict.moves, {"covercalibrator.calibrator": "off"})
 
     def test_settable_lists_only_the_moves(self):
         verdict = check(self.g, night(), "camera", "dark")
@@ -63,9 +63,11 @@ class TestCheckJk15(unittest.TestCase):
         self.assertIn("sky.day", verdict.reason)
 
     def test_impossible_lists_undefined_terminals(self):
-        verdict = check(self.g, ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "dome": "open"}), "camera", "object")
+        verdict = check(self.g, ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open"}), "camera", "object")
         self.assertIsInstance(verdict, Impossible)
         self.assertEqual(verdict.undefined_at, ("sky",))
+        unreported_lamp = check(self.g, ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "dome": "open"}), "camera", "object")
+        self.assertEqual(unreported_lamp.undefined_at, ("covercalibrator", "covercalibrator.calibrator", "sky"))
 
     def test_domeflat_by_day_moves_the_dome_to_the_screen(self):
         verdict = check(self.g, night(sun_alt_deg=20), "camera", "domeflat")
@@ -125,7 +127,7 @@ class TestCheckBesoAndTmmt(unittest.TestCase):
 
     def test_fan_in_routes(self):
         g = parse_graph(BESO)
-        state = ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "sky", "m5": "thar"}, sun_alt_deg=-30)
+        state = ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "sky", "m5": "thar", "thar_lamp": "on", "white_lamp": "on"}, sun_alt_deg=-30)
         self.assertIsInstance(check(g, state, "beso", "object"), Active)
         arc = check(g, state, "beso", "arc")
         self.assertEqual(arc.moves, {"m4": "calib"})
@@ -134,14 +136,14 @@ class TestCheckBesoAndTmmt(unittest.TestCase):
 
     def test_lamp_proven_off_makes_the_arc_impossible(self):
         g = parse_graph(BESO)
-        state = ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "calib", "m5": "thar", "thar_lamp": "off"}, sun_alt_deg=-30)
+        state = ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "calib", "m5": "thar", "thar_lamp": "off"}, sun_alt_deg=-30)
         verdict = check(g, state, "beso", "arc")
         self.assertIsInstance(verdict, Impossible)
         self.assertIn("thar_lamp", verdict.reason)
 
     def test_unusable_lamp_telemetry_never_makes_a_route_settable(self):
         g = parse_graph(BESO)
-        base = {"tertiary": "beso", "covercalibrator": "open", "dome": "open", "m4": "sky", "m5": "thar"}
+        base = {"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "sky", "m5": "thar"}
         state = ProvenState.build(base, stale=["thar_lamp"], sun_alt_deg=-30)
         verdict = check(g, state, "beso", "arc")
         self.assertIsInstance(verdict, Impossible)

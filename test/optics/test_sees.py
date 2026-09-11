@@ -2,7 +2,7 @@ import unittest
 
 from datamodels.optics import DARK, UNDEFINED, SeesRecord, SelectorState
 
-from obcom.optics import ProvenState, Unknown, available_classes, parse_graph, proven_position, sees
+from obcom.optics import ProvenState, available_classes, parse_graph, proven_position, sees
 from test.optics.fixtures import BESO, JK15_WITH_MOUNT, TMMT, jk15, night
 
 
@@ -72,9 +72,9 @@ class TestSees(unittest.TestCase):
         state = night(covercalibrator=None, **{"covercalibrator.calibrator": "on"})
         self.assertEqual(classes(sees(self.g, state, "camera")), {(UNDEFINED, "covercalibrator"), ("lamp", "covercalibrator")})
 
-    def test_unreported_aspect_asserts_nothing_but_unusable_aspect_is_undefined(self):
+    def test_unreported_or_unusable_aspect_is_undefined(self):
         no_lamp_telemetry = ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "dome": "open"}, sun_alt_deg=-30)
-        self.assertEqual(classes(sees(self.g, no_lamp_telemetry, "camera")), {("sky.science", "sky")})
+        self.assertEqual(classes(sees(self.g, no_lamp_telemetry, "camera")), {("sky.science", "sky"), (UNDEFINED, "covercalibrator")})
         stale_lamp = ProvenState(selectors={**night().selectors, "covercalibrator.calibrator": SelectorState(position=None, stale=True)}, environment=night().environment)
         self.assertEqual(classes(sees(self.g, stale_lamp, "camera")), {("sky.science", "sky"), (UNDEFINED, "covercalibrator")})
 
@@ -140,7 +140,7 @@ class TestDerivedDome(unittest.TestCase):
 
     def setUp(self):
         self.g = parse_graph(JK15_WITH_MOUNT)
-        self.base = {"tertiary": "andor", "covercalibrator": "open"}
+        self.base = {"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off"}
 
     def test_shutter_closed_is_dark(self):
         state = ProvenState.build(self.base, sun_alt_deg=-30, dome_shutter_open=False)
@@ -163,14 +163,14 @@ class TestDerivedDome(unittest.TestCase):
         comps = {**JK15_WITH_MOUNT, "mount": {"kind": "telescope", "domeflat_az_offset": 180.0}}
         g = parse_graph(comps)
         state = ProvenState.build(self.base, sun_alt_deg=10, dome_shutter_open=True, dome_az_deg=49.0, mount_az_deg=229.0, mount_alt_deg=15.0)
-        self.assertEqual(proven_position(g, state, g.nodes["dome"]), Unknown.UNDEFINED)
+        self.assertIsNone(proven_position(g, state, g.nodes["dome"]))
         away = state.with_environment(mount_az_deg=100.0, dome_az_deg=100.0)
         self.assertEqual(proven_position(g, away, g.nodes["dome"]), "open")
 
     def test_missing_inputs_are_undefined(self):
-        self.assertEqual(proven_position(self.g, ProvenState.build(self.base), self.g.nodes["dome"]), Unknown.UNDEFINED)
+        self.assertIsNone(proven_position(self.g, ProvenState.build(self.base), self.g.nodes["dome"]))
         shutter_only = ProvenState.build(self.base, dome_shutter_open=True)
-        self.assertEqual(proven_position(self.g, shutter_only, self.g.nodes["dome"]), Unknown.UNDEFINED)
+        self.assertIsNone(proven_position(self.g, shutter_only, self.g.nodes["dome"]))
 
     def test_explicit_dome_telemetry_wins_over_derivation(self):
         state = ProvenState.build({**self.base, "dome": "open"}, sun_alt_deg=-30, dome_shutter_open=False)
@@ -178,21 +178,21 @@ class TestDerivedDome(unittest.TestCase):
 
     def test_dome_without_flat_input_needs_only_the_shutter(self):
         g = parse_graph(BESO)
-        state = ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "m4": "sky"}, sun_alt_deg=-30, dome_shutter_open=True)
-        self.assertEqual(classes(sees(g, state, "beso")), {("sky.science", "sky")})
+        state = ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "m4": "sky"}, sun_alt_deg=-30, dome_shutter_open=True)
+        self.assertEqual(classes(sees(g, state, "beso")), {("sky.science", "sky")})  # unreported lamps are off the selected path
 
 
 class TestFanInAndSources(unittest.TestCase):
 
     def setUp(self):
         self.g = parse_graph(BESO)
-        self.base = {"tertiary": "beso", "covercalibrator": "open", "dome": "open"}
+        self.base = {"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open"}
 
     def test_two_real_mirrors_select_the_lamp(self):
-        state = ProvenState.build({**self.base, "m4": "calib", "m5": "thar"}, sun_alt_deg=-30)
+        state = ProvenState.build({**self.base, "m4": "calib", "m5": "thar", "thar_lamp": "on"}, sun_alt_deg=-30)
         (record,) = sees(self.g, state, "beso")
         self.assertEqual(record, SeesRecord(light_class="lamp", terminal="thar_lamp", via=("m5", "m4")))
-        state = state.with_positions({"m5": "white"})
+        state = state.with_positions({"m5": "white", "white_lamp": "on"})
         self.assertEqual(classes(sees(self.g, state, "beso")), {("lamp", "white_lamp")})
 
     def test_parked_mirror_is_dark(self):
@@ -221,9 +221,10 @@ class TestFanInAndSources(unittest.TestCase):
         self.assertEqual(record.via, ("dome", "covercalibrator", "tertiary", "fiber", "m4"))
 
     def test_available_classes_now(self):
-        state = ProvenState.build({**self.base, "m4": "calib", "m5": "thar", "thar_lamp": "off"}, sun_alt_deg=-30)
+        state = ProvenState.build({**self.base, "m4": "calib", "m5": "thar", "thar_lamp": "off", "white_lamp": "on"}, sun_alt_deg=-30)
         self.assertEqual(available_classes(self.g, state), frozenset({"sky.science", "lamp"}))
-        self.assertEqual(available_classes(self.g, ProvenState.build({})), frozenset({"lamp"}))
+        self.assertEqual(available_classes(self.g, ProvenState.build({**self.base, "thar_lamp": "off", "white_lamp": "off"}, sun_alt_deg=-30)), frozenset({"sky.science"}))
+        self.assertEqual(available_classes(self.g, ProvenState.build({})), frozenset())  # nothing proven ⇒ nothing available
 
     def test_tmmt_without_selectors(self):
         g = parse_graph(TMMT)

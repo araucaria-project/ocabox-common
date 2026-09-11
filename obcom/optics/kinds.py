@@ -9,8 +9,9 @@ or domes: it only asks kinds for their tables. The archetype is derived from ``k
 code — never from config strings.
 
 State axes: a selector has a primary axis (its position, state key = the component name) and
-may have secondary axes (``covercalibrator.calibrator``). Each axis names its vocabulary, what to
-assume when nobody reports it, or how to derive it from the environment (the dome).
+may have secondary axes (``covercalibrator.calibrator``). Each axis names its vocabulary in
+authored order and, for the dome, how to derive its value from the environment. No axis has a
+value nobody reported: unreported is undefined, like stale or moving (commanded ≠ proven).
 
 The registry is injectable: ocabox-server registers its device kinds, tests register toys; the
 default registry knows the kinds that exist at OCM today.
@@ -66,15 +67,13 @@ class Axis:
     """One state axis of a component. ``name=None`` is the primary axis (state key = the
     component name); a named axis is an aspect (state key ``component.name``).
 
-    ``vocabulary`` — the legal symbols. ``default`` — the value assumed when no telemetry reports
-    the axis: ``None`` means *unknown ⇒ undefined* (commanded ≠ proven); an aspect nobody reports
-    may default to ``off``. ``derive`` — computes the value from the environment when no
-    telemetry names it (the dome). ``actuated`` axes appear in routes as positions to set;
-    the sun is not actuated."""
+    ``vocabulary`` — the legal symbols in authored order (routes enumerate and tie-break in this
+    order). ``derive`` — computes the value from the environment when no telemetry names it (the
+    dome). ``actuated`` axes appear in routes as positions to set; the sun is not actuated. An
+    axis with neither telemetry nor derivation is undefined — never assumed."""
 
     name: str | None
-    vocabulary: frozenset[str]
-    default: str | None = None
+    vocabulary: tuple[str, ...]
     derive: Deriver | None = None
     actuated: bool = True
 
@@ -95,12 +94,15 @@ class SelectorShape(Enum):
 # --- kinds ---------------------------------------------------------------------------------------
 
 
-def _number(extra: Mapping, key: str, problems: list[str]) -> float | None:
+def _number(extra: Mapping, key: str, problems: list[str], *, minimum: float | None = None) -> float | None:
     value = extra.get(key)
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         problems.append(f"{key} must be a number, got {value!r}")
+        return None
+    if minimum is not None and value < minimum:
+        problems.append(f"{key} must be >= {minimum:g}, got {value!r}")
         return None
     return float(value)
 
@@ -162,15 +164,14 @@ class Source(Kind):
 @dataclass(frozen=True)
 class ConstantSource(Source):
     """Emits one class whenever it is on the path. ``switchable`` sources (lamps) have a power
-    axis: proven ``off`` ⇒ dark, unusable telemetry ⇒ undefined, unreported ⇒ taken as lit — the
-    class names the *type* of light on the path; a lamp's power is the calibration sequence's
-    business."""
+    axis: proven ``on`` ⇒ the class, proven ``off`` ⇒ dark, unreported or unusable ⇒ undefined —
+    a lamp nobody has seen lit certifies no arc."""
 
     emits: str = ""
     switchable: bool = False
 
     def axes(self, spec):
-        return (Axis(None, frozenset({"on", "off"}), default="on", actuated=False),) if self.switchable else ()
+        return (Axis(None, ("off", "on"), actuated=False),) if self.switchable else ()
 
     def possible_classes(self, spec):
         return frozenset({self.emits})
@@ -178,7 +179,7 @@ class ConstantSource(Source):
     def emission(self, spec, values):
         if not self.switchable:
             return self.emits
-        power = values.get(None, "on")
+        power = values.get(None)
         if power is None:
             return UNDEFINED
         return DARK if power == "off" else self.emits
@@ -194,7 +195,7 @@ class SkySource(Source):
     flat_sun_alt: tuple[float, float] = (-15.0, 1.0)
 
     def axes(self, spec):
-        return (Axis(None, frozenset(str(s) for s in SkyState), derive=self._sun_state, actuated=False),)
+        return (Axis(None, tuple(str(s) for s in SkyState), derive=self._sun_state, actuated=False),)
 
     def _sun_state(self, spec, components, env: Environment) -> str | None:
         state = self.sky_state(spec, env.sun_alt_deg)
@@ -252,7 +253,8 @@ class SkySource(Source):
 @dataclass(frozen=True)
 class Aspect:
     """A secondary axis of a selector that *emits* when ``on`` (the calibrator lamp of an Alpaca
-    ICoverCalibrator). Unreported ⇒ assumed ``off``; unusable telemetry ⇒ undefined."""
+    ICoverCalibrator). Unreported or unusable ⇒ undefined, like every axis: a lamp nobody has seen
+    off certifies no clean sky (a cover without a lamp reports ``NotPresent`` ⇒ ``off``)."""
 
     name: str
     emits: str
@@ -260,11 +262,11 @@ class Aspect:
     off: str = "off"
 
     @property
-    def positions(self) -> frozenset[str]:
-        return frozenset({self.on, self.off})
+    def positions(self) -> tuple[str, str]:
+        return (self.off, self.on)
 
     def axis(self) -> Axis:
-        return Axis(self.name, self.positions, default=self.off)
+        return Axis(self.name, self.positions)
 
 
 @dataclass(frozen=True)
@@ -281,7 +283,7 @@ class Selector(Kind):
     """
 
     archetype: Archetype = field(default=Archetype.SELECTOR, init=False)
-    intrinsic_positions: frozenset[str] = frozenset()
+    intrinsic_positions: tuple[str, ...] = ()
     dark_positions: frozenset[str] = frozenset()
     aspects: tuple[Aspect, ...] = ()
     gate: bool = False
@@ -298,11 +300,14 @@ class Selector(Kind):
             return SelectorShape.FAN_IN
         return SelectorShape.GATE if self.gate else SelectorShape.OUTPUT_PORTS
 
-    def positions(self, spec: OpticalComponentSpec) -> frozenset[str]:
-        declared = frozenset(spec.positions) if spec.positions is not None else frozenset()
+    def positions(self, spec: OpticalComponentSpec) -> tuple[str, ...]:
+        """The position vocabulary in authored order: declared ``positions:``, then fan-in
+        ``inputs:``, then the kind's intrinsic ones — each symbol once."""
+        authored: list[str] = list(spec.positions) if spec.positions is not None else []
         if self.is_fan_in(spec):
-            declared |= frozenset(spec.optics.inputs or {})
-        return declared | self.intrinsic_positions
+            authored += list(spec.optics.inputs or {})
+        authored += self.intrinsic_positions
+        return tuple(dict.fromkeys(authored))
 
     def blocks(self, spec: OpticalComponentSpec, position: str) -> bool:
         if position in self.dark_positions:
@@ -317,7 +322,7 @@ class Selector(Kind):
     def outputs(self, spec):
         if self.is_fan_in(spec) or self.gate:
             return frozenset({OUT})
-        return self.positions(spec)
+        return frozenset(self.positions(spec))
 
     def aspect(self, name: str) -> Aspect | None:
         return next((a for a in self.aspects if a.name == name), None)
@@ -331,7 +336,7 @@ class Selector(Kind):
         position = values.get(None)
         own: set[Signal] = set()  # what the selector emits by itself, independent of its position
         for aspect in self.aspects:
-            a = values.get(aspect.name, aspect.off)
+            a = values.get(aspect.name)
             if a is None:
                 own.add(Emit(UNDEFINED))
             elif a == aspect.on:
@@ -368,7 +373,7 @@ class DomeKind(Selector):
     DEFAULT_TOLERANCE_DEG: ClassVar[float] = 3.0
 
     name: str = "dome"
-    intrinsic_positions: frozenset[str] = frozenset({"closed"})
+    intrinsic_positions: tuple[str, ...] = ("closed",)
     dark_positions: frozenset[str] = frozenset({"closed"})
     fan_in_positions: frozenset[str] | None = frozenset({"open", "flat"})
 
@@ -402,7 +407,7 @@ class DomeKind(Selector):
         problems: list[str] = []
         extra = spec.model_extra or {}
         _number(extra, "domeflat_az", problems)
-        _number(extra, "slew_tolerance", problems)
+        _number(extra, "slew_tolerance", problems, minimum=0.0)
         mount = next((c for c in components.values() if c.kind == "telescope"), None)
         if mount is not None:
             mount_extra = mount.model_extra or {}
@@ -489,7 +494,7 @@ class KindRegistry:
 COVER_CALIBRATOR = Selector(
     name="covercalibrator",
     gate=True,
-    intrinsic_positions=frozenset({"open", "close"}),
+    intrinsic_positions=("open", "close"),
     dark_positions=frozenset({"close"}),
     aspects=(Aspect(name="calibrator", emits=str(SourceFamily.LAMP)),),
 )

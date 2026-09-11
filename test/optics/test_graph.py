@@ -3,6 +3,7 @@ import unittest
 from datamodels.optics import Archetype, Invalid
 
 from obcom.optics import (
+    enumerate_routes,
     DEFAULT_REGISTRY,
     IN,
     OUT,
@@ -228,6 +229,7 @@ class TestLoadTimeValidation(unittest.TestCase):
         self.assertInvalid(jk15(sky={"kind": "sky", "science_sun_alt": "dark"}), "invalid_option", component="sky")
         self.assertInvalid(jk15(sky={"kind": "sky", "science_sun_alt": -5.0}), "invalid_option", component="sky")  # above the flat range
         self.assertInvalid(jk15(dome={**jk15()["dome"], "slew_tolerance": "3"}), "invalid_option", component="dome")
+        self.assertInvalid(jk15(dome={**jk15()["dome"], "slew_tolerance": -1}), "invalid_option", component="dome")
         self.assertInvalid(jk15(mount={"kind": "telescope", "domeflat_alt": True}), "invalid_option", component="dome")
         parse_graph(jk15(sky={"kind": "sky", "science_sun_alt": -12, "flat_sun_alt": [-10, 2]}))
 
@@ -257,6 +259,25 @@ class TestKindPromotion(unittest.TestCase):
     def test_filterwheel_without_dark_position_stays_passive(self):
         fw = {"kind": "filterwheel", "positions": {"v": {"slot": 1}, "r": {"slot": 2}}, "optics": {"from": {"pickoff": "main"}}}
         self.assertEqual(parse_graph(jk15(filterwheel=fw)).nodes["filterwheel"].archetype, Archetype.PASSIVE)
+
+
+class TestAuthoredOrder(unittest.TestCase):
+
+    def test_vocabularies_keep_the_authored_order(self):
+        g = parse_graph(jk15())
+        self.assertEqual(g.nodes["tertiary"].primary.vocabulary, ("beso", "andor"))
+        self.assertEqual(g.nodes["covercalibrator"].primary.vocabulary, ("open", "close"))
+        self.assertEqual(g.nodes["dome"].primary.vocabulary, ("open", "flat", "closed"))  # authored inputs, then the intrinsic closed
+        self.assertEqual([row[None] for row in g.nodes["tertiary"].assignments()], ["beso", "andor"])
+
+    def test_routes_enumerate_in_authored_order(self):
+        g = parse_graph(jk15())
+        terminals = [r.terminal for r in enumerate_routes(g, "camera") if "dark" in r.classes]
+        # table rows in authored order, nearest component first: M3 away (beso before andor), then through the
+        # cover's first row (open) to the dome's rows, then the cover's own closed row
+        self.assertEqual(terminals, ["tertiary", "dome", "covercalibrator"])
+        swapped = jk15(tertiary={**jk15()["tertiary"], "positions": {"andor": {"port": 2}, "beso": {"port": 1}}})
+        self.assertEqual(parse_graph(swapped).nodes["tertiary"].primary.vocabulary, ("andor", "beso"))
 
 
 if __name__ == "__main__":

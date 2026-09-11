@@ -31,6 +31,7 @@ from datamodels.optics import (
     OpticalComponentSpec,
     PortOwner,
     TelescopeOpticsSpec,
+    VerdictKind,
     split_state_key,
 )
 from pydantic import ValidationError
@@ -62,7 +63,7 @@ class GraphInvalid(ValueError):
 
     @property
     def verdict(self) -> Invalid:
-        return Invalid(errors=self.errors)
+        return Invalid(kind=VerdictKind.INVALID, errors=self.errors)
 
 
 @dataclass(frozen=True)
@@ -109,7 +110,7 @@ class Node:
     def positions(self) -> frozenset[str] | None:
         """Declared position vocabulary: a selector's primary axis, a splitter's declared ports."""
         if self.archetype == Archetype.SELECTOR:
-            return self.primary.vocabulary if self.primary is not None else frozenset()
+            return frozenset(self.primary.vocabulary) if self.primary is not None else frozenset()
         if self.archetype == Archetype.SPLITTER:
             return self.outputs
         return None
@@ -135,23 +136,20 @@ class Node:
         return self.kind.transfer(self.spec, values)
 
     def assignments(self) -> Iterator[dict[str | None, str]]:
-        """Every combination of the actuated axes' vocabularies (one empty assignment when there
-        are none) — the rows of the transfer table that routes enumerate."""
+        """Every combination of the actuated axes' vocabularies, in authored order (one empty
+        assignment when there are none) — the rows of the transfer table that routes enumerate."""
         axes = [a for a in self.axes if a.actuated]
-        for combo in product(*(sorted(a.vocabulary) for a in axes)):
+        for combo in product(*(a.vocabulary for a in axes)):
             yield {a.name: v for a, v in zip(axes, combo)}
 
     def transmitting_positions(self) -> frozenset[str]:
-        """Primary positions in which light passes through the component (other axes at default)."""
-        if self.primary is None:
-            return frozenset()
-        defaults = {a.name: a.default for a in self.axes if a.name is not None}
-        result = set()
-        for p in self.primary.vocabulary:
-            row = self.table({None: p, **defaults})
-            if any(isinstance(s, Transmit) for sigs in row.values() for s in sigs):
-                result.add(p)
-        return frozenset(result)
+        """Primary positions in which light can pass through the component (for some value of
+        the other axes)."""
+        return frozenset(
+            values[None]
+            for values in self.assignments()
+            if None in values and any(isinstance(s, Transmit) for sigs in self.table(values).values() for s in sigs)
+        )
 
     def dark_positions(self) -> frozenset[str]:
         return (self.positions or frozenset()) - self.transmitting_positions()
@@ -472,7 +470,7 @@ def _check_paths(graph: OpticalGraph, errors: list[ConfigError]) -> None:
                         ok = False
                     elif symbol not in axis.vocabulary:
                         what = key if aspect else component
-                        _err(errors, "undeclared_position", f"{where}: {what!r} has no position {symbol!r} (declared: {', '.join(sorted(axis.vocabulary))})", node.name, f"{where}.via")
+                        _err(errors, "undeclared_position", f"{where}: {what!r} has no position {symbol!r} (declared: {', '.join(axis.vocabulary)})", node.name, f"{where}.via")
                         ok = False
                 if ok and not routes_for_goal(routes, alt):
                     _err(errors, "unsatisfiable_path", f"{where}: no route through the graph shows {node.name} {alt.see!r} with via {alt.via}", node.name, where)
