@@ -3,6 +3,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.0]
+### Added
+- `obcom.optics`: the Optical Path Model v4 reference solver — `parse_graph`
+  (edge grammar, kind registry, load-time validation with reasons), `sees`,
+  `check`, `resolve`, `compile_telescope`/`compile_observatory` (route table +
+  conflict map, generated then verified) and the conformance-vector suite
+  (`optics-conformance`). Pure functions over (graph, proven state), no I/O.
+### Changed
+- Python floor is 3.11 (was 3.10).
+- New dependency: `datamodels` (optics vocabularies and result shapes).
+
 ## [1.5.0]
 ### Changed
 - ErrorPolicy.DISPLAY stops on CRITICAL like every other preset (NOTIFY-and-heal removed).
