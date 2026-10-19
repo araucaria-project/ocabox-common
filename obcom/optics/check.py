@@ -39,6 +39,7 @@ from datamodels.optics import (
 
 from obcom.optics.graph import OpticalGraph
 from obcom.optics.kinds import Source
+from obcom.optics.labels import component_label, label
 from obcom.optics.routes import StaticRoute, enumerate_routes, routes_for_goal
 from obcom.optics.sees import available_classes, sees, source_emission
 from obcom.optics.state import Hold, ProvenState, resolve_axes
@@ -91,7 +92,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
             if blocked:
                 held_unknown.update(blocked)
                 continue
-            held = _collision(state, route, moves, alt.see)
+            held = _collision(graph, state, route, moves, alt.see)
             if held is not None:
                 collision = collision or held
                 continue
@@ -106,18 +107,22 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
     undefined_at = tuple(sorted({k for k, v in proven.items() if v is None} | {r.terminal for r in now if r.light_class == UNDEFINED} | undefined_sources))
     have = ", ".join(sorted(available)) or "nothing"
     if not applicable:
-        reason = f"no alternative of {detector}.{function} applies now (when-conditions unmet; available: {have})"
+        reason = f"no alternative of {function} applies now (when-conditions unmet; available: {have})"
     elif unavailable is not None:
-        who = ", ".join(sorted(not_emitting)) or "no source"
-        reason = f"{who} not providing {unavailable!r} now (available: {have})"
+        who = ", ".join(sorted(component_label(graph, name) for name in not_emitting)) or "no source"
+        reason = f"{who} not providing {unavailable} now (available: {have})"
     elif held_unknown:
-        reason = f"no route to {detector}.{function} can be set now: " + "; ".join(
-            f"{key} is held at an unknown position" + (f" by {hold.holder}" if hold.holder else "")
-            for key, hold in sorted(held_unknown.items()))
+        reason = "; ".join(f"{label(graph, key)}: position unknown ({_cause(graph, state, key)}), cannot be moved"
+                           + (f" — held by {hold.holder}" if hold.holder else "")
+                           for key, hold in sorted(held_unknown.items()))
+        undefined_at_shown = tuple(k for k in undefined_at if k not in held_unknown)
+        if undefined_at_shown:
+            reason += "; unknown: " + ", ".join(f"{label(graph, k)} ({_cause(graph, state, k)})" for k in undefined_at_shown)
+        return Impossible(kind=VerdictKind.IMPOSSIBLE, reason=reason, unavailable=unavailable, undefined_at=undefined_at)
     else:
-        reason = f"no route to {detector}.{function} can be set now"
+        reason = f"no route to {function} can be set now"
     if undefined_at:
-        reason += f"; undefined: {', '.join(undefined_at)}"
+        reason += "; unknown: " + ", ".join(f"{label(graph, k)} ({_cause(graph, state, k)})" for k in undefined_at)
     return Impossible(kind=VerdictKind.IMPOSSIBLE, reason=reason, unavailable=unavailable, undefined_at=undefined_at)
 
 
@@ -186,17 +191,24 @@ def _terminal_emission(graph: OpticalGraph, state: ProvenState, route: StaticRou
     return None
 
 
-def _collision(state: ProvenState, route: StaticRoute, moves: Mapping[str, str], see: str) -> Collision | None:
+def _collision(graph: OpticalGraph, state: ProvenState, route: StaticRoute, moves: Mapping[str, str], see: str) -> Collision | None:
     for key, required in moves.items():
         hold = state.holds.get(key)
         if hold is not None and hold.position is not None and hold.position != required:
-            by = f" by {hold.holder}" if hold.holder else ""
+            by = f" — held by {hold.holder}" if hold.holder else " — held"
             return Collision(
                 kind=VerdictKind.COLLISION,
                 selector=key,
                 required=required,
                 held=hold.position,
                 holder=hold.holder,
-                reason=f"{key} is held at {hold.position!r}{by}; {see!r} needs {required!r}",
+                reason=f"{see} needs {label(graph, key)} {required}, it is {hold.position}{by}",
             )
     return None
+
+
+def _cause(graph: OpticalGraph, state: ProvenState, key: str) -> str:
+    """Why state axis ``key`` is undefined, in words for people."""
+    component, aspect = split_state_key(key)
+    resolved = resolve_axes(graph, state, graph.nodes[component]).get(aspect)
+    return (resolved.cause if resolved is not None else None) or "unknown"

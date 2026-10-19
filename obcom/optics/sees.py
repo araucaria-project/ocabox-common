@@ -7,11 +7,18 @@ component as terminal. Never empty: the worst steady state is ``dark``, the wors
 
 from __future__ import annotations
 
+from functools import partial
+from typing import Callable
+
 from datamodels.optics import DARK, UNDEFINED, Archetype, SeesRecord
 
 from obcom.optics.graph import Node, OpticalGraph
 from obcom.optics.kinds import IN, OUT, AxisValues, Emit, Signals, Transmit, is_dark
 from obcom.optics.state import ProvenState, axis_values
+
+#: the transfer-table row of a component now: :func:`axis_values` over a proven state, or the
+#: positions a service published (:func:`obcom.optics.ribbon.published_values`)
+ValuesOf = Callable[[Node], AxisValues]
 
 
 def sees(graph: OpticalGraph, state: ProvenState, detector: str) -> frozenset[SeesRecord]:
@@ -20,7 +27,14 @@ def sees(graph: OpticalGraph, state: ProvenState, detector: str) -> frozenset[Se
     node = graph.node(detector)
     if node.archetype != Archetype.DETECTOR:
         raise ValueError(f"{detector!r} is a {node.archetype}, not a detector")
-    return _arriving(graph, state, node, IN, {})
+    return _arriving(graph, partial(axis_values, graph, state), node, IN, {})
+
+
+def emerging(graph: OpticalGraph, values_of: ValuesOf, name: str, ports: frozenset[str] = frozenset({OUT}), memo=None) -> frozenset[SeesRecord]:
+    """What leaves component ``name`` towards a downstream hanging on its ``ports`` — the same walk
+    as :func:`sees`, from any component and over any row source (``memo`` shares the walk between
+    calls on one state)."""
+    return _from(graph, values_of, graph.node(name), ports, {} if memo is None else memo)
 
 
 def available_classes(graph: OpticalGraph, state: ProvenState) -> frozenset[str]:
@@ -62,23 +76,23 @@ def _through(records: frozenset[SeesRecord], node: str) -> frozenset[SeesRecord]
     return frozenset(SeesRecord(light_class=r.light_class, terminal=r.terminal, via=r.via + (node,)) for r in records)
 
 
-def _arriving(graph: OpticalGraph, state: ProvenState, node: Node, in_port: str, memo) -> frozenset[SeesRecord]:
+def _arriving(graph: OpticalGraph, values_of: ValuesOf, node: Node, in_port: str, memo) -> frozenset[SeesRecord]:
     result: set[SeesRecord] = set()
     for feed in node.feeds.get(in_port, ()):
-        result |= _from(graph, state, graph.nodes[feed.upstream], feed.ports, memo)
+        result |= _from(graph, values_of, graph.nodes[feed.upstream], feed.ports, memo)
     return frozenset(result)
 
 
-def _from(graph: OpticalGraph, state: ProvenState, node: Node, ports: frozenset[str], memo) -> frozenset[SeesRecord]:
+def _from(graph: OpticalGraph, values_of: ValuesOf, node: Node, ports: frozenset[str], memo) -> frozenset[SeesRecord]:
     key = (node.name, ports)
     if key in memo:
         return memo[key]
     result: set[SeesRecord] = set()
-    for signal in outgoing(node, axis_values(graph, state, node), ports):
+    for signal in outgoing(node, values_of(node), ports):
         if isinstance(signal, Emit):
             result.add(SeesRecord(light_class=signal.light, terminal=node.name, via=()))
         else:
             assert isinstance(signal, Transmit)
-            result |= _through(_arriving(graph, state, node, signal.port, memo), node.name)
+            result |= _through(_arriving(graph, values_of, node, signal.port, memo), node.name)
     memo[key] = frozenset(result)
     return memo[key]
