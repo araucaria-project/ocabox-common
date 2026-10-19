@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from datamodels.optics import UNDEFINED, GoalSpec, state_key
+from datamodels.optics import UNDEFINED, GoalSpec, light_satisfies, state_key
 
 from obcom.optics.graph import Node, OpticalGraph
 from obcom.optics.kinds import IN, Emit, Source, Transmit
@@ -50,9 +50,11 @@ def enumerate_routes(graph: OpticalGraph, detector: str) -> tuple[StaticRoute, .
 
 
 def routes_for_goal(routes: Iterable[StaticRoute], goal: GoalSpec) -> tuple[StaticRoute, ...]:
-    """Routes that show ``goal.see`` and honour ``goal.via`` (``via`` ⊆ route positions)."""
+    """Routes that can show light satisfying ``goal.see`` (``lamp`` accepts ``lamp.thar``) and honour
+    ``goal.via`` (``via`` ⊆ route positions)."""
     return tuple(
-        r for r in routes if goal.see in r.classes and all(r.positions.get(k) == v for k, v in goal.via.items())
+        r for r in routes
+        if any(light_satisfies(goal.see, c) for c in r.classes) and all(r.positions.get(k) == v for k, v in goal.via.items())
     )
 
 

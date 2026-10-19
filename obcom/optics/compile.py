@@ -13,7 +13,7 @@ from importlib.metadata import PackageNotFoundError, version
 from itertools import product
 from typing import Mapping
 
-from datamodels.optics import Conflict, OpticsCompiled, Route, RouteKey, TelescopeCompiled, TelescopeOpticsSpec, state_key
+from datamodels.optics import Conflict, OpticsCompiled, Route, RouteKey, TelescopeCompiled, TelescopeOpticsSpec, light_satisfies, state_key
 
 from obcom.optics.graph import OpticalGraph, parse_graph
 from obcom.optics.kinds import DEFAULT_REGISTRY, OUT, Emit, KindRegistry, Source
@@ -125,7 +125,8 @@ def _source_precondition(graph: OpticalGraph, terminal: str, see: str) -> tuple[
         return {}, {}
     for combo in product(*(a.vocabulary for a in node.axes)):
         values = dict(zip(node.axes, combo))
-        if node.table({a.name: v for a, v in values.items()})[OUT] != frozenset({Emit(see)}):
+        (signal,) = node.table({a.name: v for a, v in values.items()})[OUT]
+        if not (isinstance(signal, Emit) and light_satisfies(see, signal.light)):
             continue
         telemetry: dict[str, str] = {}
         environment: dict[str, object] = {}
@@ -144,7 +145,7 @@ def _verify(graph: OpticalGraph, route: Route, terminal: str) -> None:
     telemetry, environment = _source_precondition(graph, terminal, route.see)
     state = ProvenState.build({**route.positions, **telemetry}, **environment)
     now = sees(graph, state, route.detector)
-    if len(now) != 1 or next(iter(now)).light_class != route.see or next(iter(now)).terminal != terminal:
+    if len(now) != 1 or not light_satisfies(route.see, next(iter(now)).light_class) or next(iter(now)).terminal != terminal:
         seen = ", ".join(sorted(f"{r.light_class}@{r.terminal}" for r in now)) or "nothing"
         raise CompileError(
             f"route {route.detector}.{route.function}[{route.alternative}#{route.realization}] with {dict(route.positions)} "

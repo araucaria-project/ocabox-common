@@ -32,6 +32,7 @@ from datamodels.optics import (
     PortOwner,
     TelescopeOpticsSpec,
     VerdictKind,
+    light_satisfies,
     split_state_key,
 )
 from pydantic import ValidationError
@@ -457,10 +458,10 @@ def _check_paths(graph: OpticalGraph, errors: list[ConfigError]) -> None:
             for i, alt in enumerate(node.paths.alternatives(function)):
                 where = f"{node.name}.paths.{function}[{i}]"
                 ok = True
-                if alt.see not in cone_classes:
+                if not any(light_satisfies(alt.see, c) for c in cone_classes):
                     _err(errors, "unsatisfiable_path", f"{where}: nothing upstream of {node.name} can emit {alt.see!r}", node.name, where)
                     ok = False
-                if alt.when is not None and alt.when not in light_classes:
+                if alt.when is not None and not any(light_satisfies(alt.when, c) for c in light_classes):
                     _err(errors, "unknown_light_class", f"{where}: `when: {alt.when}` names no light any source of this telescope emits (dark is not light)", node.name, where)
                 for key, symbol in alt.via.items():
                     component, aspect = split_state_key(key)

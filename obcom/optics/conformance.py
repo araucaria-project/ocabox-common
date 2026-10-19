@@ -81,14 +81,14 @@ BESO: dict = {
         "optics": {"from": "covercalibrator"},
     },
     "fiber": {"kind": "fiber", "optics": {"from": {"tertiary": "beso"}}},
-    "thar_lamp": {"kind": "lamp"},
-    "white_lamp": {"kind": "lamp"},
+    "thar_lamp": {"kind": "lamp", "light": "lamp.thar"},
+    "white_lamp": {"kind": "lamp", "light": "lamp.white"},
     "m5": {"kind": "mirror", "optics": {"inputs": {"thar": "thar_lamp", "white": "white_lamp"}}},
     "m4": {"kind": "mirror", "positions": {"sky": {}, "calib": {}, "park": {}}, "optics": {"inputs": {"sky": "fiber", "calib": "m5"}}},
     "beso": {
         "kind": "spectrograph",
         "optics": {"from": "m4"},
-        "paths": {"object": "sky.science", "arc": {"see": "lamp", "via": {"m5": "thar"}}, "flat": {"see": "lamp", "via": {"m5": "white"}}, "dark": "dark"},
+        "paths": {"object": "sky.science", "arc": "lamp.thar", "flat": "lamp.white", "dark": "dark"},  # goals are classes: the config, not the plan, says which lamp
     },
     "camera": {"kind": "camera", "optics": {"from": {"tertiary": "andor"}}, "paths": {"object": "sky.science", "dark": "dark"}},
 }

@@ -40,6 +40,7 @@ from obcom.optics.kinds import (
 from obcom.optics.routes import StaticRoute, enumerate_routes, routes_for_goal
 from obcom.optics.sees import available_classes, outgoing, sees
 from obcom.optics.state import Hold, ProvenState, Resolved, proven_position, resolve_axes
+from obcom.optics.telemetry import Readings, proven_state, tertiary_symbol
 
 __all__ = [
     "parse_graph", "validate_graph", "GraphInvalid", "OpticalGraph", "Node", "Feed",
@@ -48,6 +49,7 @@ __all__ = [
     "compile_telescope", "compile_observatory", "authored_hash", "CompileError",
     "enumerate_routes", "routes_for_goal", "StaticRoute",
     "ProvenState", "Hold", "Resolved", "proven_position", "resolve_axes",
+    "Readings", "proven_state", "tertiary_symbol",
     "KindRegistry", "DEFAULT_REGISTRY", "default_registry", "Kind", "Source", "ConstantSource", "SkySource",
     "Selector", "SelectorShape", "Aspect", "Axis", "DomeKind", "Splitter", "Passive", "Detector",
     "Transmit", "Emit", "IN", "OUT",
