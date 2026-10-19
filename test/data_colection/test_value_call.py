@@ -5,7 +5,6 @@ from obcom.data_colection.response_error import ResponseError
 from obcom.data_colection.tree_user import TreeUser, TreeServiceUser
 from obcom.data_colection.value import Value
 from obcom.data_colection.value_call import ValueRequest, ValueResponse
-from obcom.ob_config import OBConfig
 
 
 class ValueExchangeTest(unittest.TestCase):
@@ -13,13 +12,6 @@ class ValueExchangeTest(unittest.TestCase):
 
 
 class ValueRequestTest(unittest.TestCase):
-
-    def setUp(self):
-        super().setUp()
-        self._cfg = OBConfig()
-
-    def tearDown(self) -> None:
-        super().tearDown()
 
     def test_from_dict(self):
         """
