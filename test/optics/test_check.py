@@ -114,6 +114,22 @@ class TestCheckJk15(unittest.TestCase):
         self.assertIsInstance(verdict, Settable)
         self.assertNotIn("covercalibrator", verdict.moves)
 
+    def test_selector_held_at_an_unknown_position_is_routed_around(self):
+        # broken dome shutter: the dome is undefined and must not move; the cover is held open —
+        # the only dark left is M3 away from the camera
+        holds = {"dome": Hold(None, "the operator"), "covercalibrator": Hold("open", "the operator")}
+        state = ProvenState(night(dome=None).selectors, night().environment, holds=holds)
+        verdict = check(self.g, state, "camera", "dark")
+        self.assertIsInstance(verdict, Settable)
+        self.assertEqual(verdict.moves, {"tertiary": "beso"})
+
+    def test_selector_held_at_an_unknown_position_never_moves(self):
+        state = ProvenState(night(dome=None).selectors, night().environment, holds={"dome": Hold(None, "the operator")})
+        verdict = check(self.g, state, "camera", "object")
+        self.assertIsInstance(verdict, Impossible)
+        self.assertIn("dome is held at an unknown position by the operator", verdict.reason)
+        self.assertIn("dome", verdict.undefined_at)
+
     def test_unknown_function_is_a_caller_error(self):
         with self.assertRaises(UnknownFunction):
             check(self.g, night(), "camera", "spectroscopy")
