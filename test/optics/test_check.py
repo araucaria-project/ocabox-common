@@ -156,6 +156,15 @@ class TestCheckBesoAndTmmt(unittest.TestCase):
         flat = check(g, state, "beso", "flat")
         self.assertEqual(flat.moves, {"m4": "calib", "m5": "white"})
 
+    def test_goals_match_light_by_family(self):
+        g = parse_graph(BESO)
+        state = ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "calib", "m5": "white", "thar_lamp": "on", "white_lamp": "on"}, sun_alt_deg=-30)
+        arc = check(g, state, "beso", "arc")  # arc wants lamp.thar; the white lamp does not do
+        self.assertIsInstance(arc, Settable)
+        self.assertEqual(arc.moves, {"m5": "thar"})
+        any_lamp = {**BESO, "beso": {**BESO["beso"], "paths": {**BESO["beso"]["paths"], "lampflat": "lamp"}}}
+        self.assertIsInstance(check(parse_graph(any_lamp), state, "beso", "lampflat"), Active)  # `lamp` accepts lamp.white
+
     def test_lamp_proven_off_makes_the_arc_impossible(self):
         g = parse_graph(BESO)
         state = ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "calib", "m5": "thar", "thar_lamp": "off"}, sun_alt_deg=-30)

@@ -233,9 +233,9 @@ class TestFanInAndSources(unittest.TestCase):
     def test_two_real_mirrors_select_the_lamp(self):
         state = ProvenState.build({**self.base, "m4": "calib", "m5": "thar", "thar_lamp": "on"}, sun_alt_deg=-30)
         (record,) = sees(self.g, state, "beso")
-        self.assertEqual(record, SeesRecord(light_class="lamp", terminal="thar_lamp", via=("m5", "m4")))
+        self.assertEqual(record, SeesRecord(light_class="lamp.thar", terminal="thar_lamp", via=("m5", "m4")))  # the declared `light:`
         state = state.with_positions({"m5": "white", "white_lamp": "on"})
-        self.assertEqual(classes(sees(self.g, state, "beso")), {("lamp", "white_lamp")})
+        self.assertEqual(classes(sees(self.g, state, "beso")), {("lamp.white", "white_lamp")})
 
     def test_parked_mirror_is_dark(self):
         state = ProvenState.build({**self.base, "m4": "park", "m5": "thar"}, sun_alt_deg=-30)
@@ -264,7 +264,7 @@ class TestFanInAndSources(unittest.TestCase):
 
     def test_available_classes_now(self):
         state = ProvenState.build({**self.base, "m4": "calib", "m5": "thar", "thar_lamp": "off", "white_lamp": "on"}, sun_alt_deg=-30)
-        self.assertEqual(available_classes(self.g, state), frozenset({"sky.science", "lamp"}))
+        self.assertEqual(available_classes(self.g, state), frozenset({"sky.science", "lamp.white"}))
         self.assertEqual(available_classes(self.g, ProvenState.build({**self.base, "thar_lamp": "off", "white_lamp": "off"}, sun_alt_deg=-30)), frozenset({"sky.science"}))
         self.assertEqual(available_classes(self.g, ProvenState.build({})), frozenset())  # nothing proven ⇒ nothing available
 

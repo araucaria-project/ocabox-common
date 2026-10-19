@@ -244,6 +244,8 @@ class TestLoadTimeValidation(unittest.TestCase):
         self.assertInvalid(jk15(sky={"kind": "sky", "science_sun_alt": "dark"}), "invalid_option", component="sky")
         self.assertInvalid(jk15(sky={"kind": "sky", "science_sun_alt": -5.0}), "invalid_option", component="sky")  # above the flat range
         self.assertInvalid(jk15(sky={"kind": "sky", "flat_sun_alt": [-10.0, float("inf")]}), "invalid_option", component="sky")
+        self.assertInvalid(jk15(sky={"kind": "sky", "light": "sky.science"}), "invalid_option", component="sky")  # the sky's class follows the sun
+        self.assertInvalid({**BESO, "thar_lamp": {"kind": "lamp", "light": "flatscreen.x"}}, "invalid_option", component="thar_lamp")
         self.assertInvalid(jk15(dome={**jk15()["dome"], "slew_tolerance": "3"}), "invalid_option", component="dome")
         self.assertInvalid(jk15(dome={**jk15()["dome"], "slew_tolerance": -1}), "invalid_option", component="dome")
         self.assertInvalid(jk15(dome={**jk15()["dome"], "slew_tolerance": float("nan")}), "invalid_option", component="dome")

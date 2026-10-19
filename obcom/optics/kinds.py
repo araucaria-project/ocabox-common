@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, ClassVar, Mapping
 
-from datamodels.optics import DARK, UNDEFINED, Archetype, Environment, OpticalComponentSpec, SkyState, SourceFamily
+from datamodels.optics import DARK, UNDEFINED, Archetype, Environment, OpticalComponentSpec, SkyState, SourceFamily, light_family
 
 # --- signals -----------------------------------------------------------------------------------
 
@@ -192,9 +192,10 @@ class Source(Kind):
 
 @dataclass(frozen=True)
 class ConstantSource(Source):
-    """Emits one class whenever it is on the path. ``switchable`` sources (lamps) have a power
-    axis: proven ``on`` ⇒ the class, proven ``off`` ⇒ dark, unreported or unusable ⇒ undefined —
-    a lamp nobody has seen lit certifies no arc."""
+    """Emits one class whenever it is on the path: the kind's family (``lamp``), or the state the
+    config declares within it (``light: lamp.thar``) — a goal ``lamp`` accepts any lamp, ``lamp.thar``
+    that one. ``switchable`` sources (lamps) have a power axis: proven ``on`` ⇒ the class, proven
+    ``off`` ⇒ dark, unreported or unusable ⇒ undefined — a lamp nobody has seen lit certifies no arc."""
 
     emits: str = ""
     switchable: bool = False
@@ -202,19 +203,28 @@ class ConstantSource(Source):
     def ambient(self, spec):
         return not self.switchable
 
+    def light(self, spec: OpticalComponentSpec) -> str:
+        """The class this component emits: ``light:`` from the config, else the kind's family."""
+        return spec.light or self.emits
+
     def axes(self, spec):
         return (Axis(None, ("off", "on"), actuated=False),) if self.switchable else ()
 
     def possible_classes(self, spec):
-        return frozenset({self.emits, DARK}) if self.switchable else frozenset({self.emits})  # a lamp proven off is a dark terminal
+        return frozenset({self.light(spec), DARK}) if self.switchable else frozenset({self.light(spec)})  # a lamp proven off is a dark terminal
 
     def emission(self, spec, values):
         if not self.switchable:
-            return self.emits
+            return self.light(spec)
         power = values.get(None)
         if power is None:
             return UNDEFINED
-        return DARK if power == "off" else self.emits
+        return DARK if power == "off" else self.light(spec)
+
+    def validate(self, spec, components):
+        if spec.light is not None and light_family(spec.light) != self.emits:
+            return [f"light: {spec.light!r} is not a {self.emits!r} class — a {self.name} declares a state of its own family"]
+        return []
 
 
 @dataclass(frozen=True)
@@ -272,6 +282,8 @@ class SkySource(Source):
     def validate(self, spec, components):
         extra = spec.model_extra or {}
         problems: list[str] = []
+        if spec.light is not None:
+            problems.append(f"light: the sky's class follows the sun, it is not declared ({spec.light!r})")
         science = _number(extra, "science_sun_alt", problems)
         flat = extra.get("flat_sun_alt")
         lo = hi = None

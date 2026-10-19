@@ -3,6 +3,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.0]
+### Added
+- `obcom.optics`: sources may declare `light:` (a state within the kind's family, e.g.
+  `lamp.thar`); goals match by family (`lamp` accepts any lamp, `lamp.thar` that one).
+- `obcom.optics.telemetry`: Alpaca readbacks (cover, calibrator, shutter, M3 port) →
+  `ProvenState`, shared by the CLI and TIC's optics adapter.
+### Changed
+- Requires datamodels >= 0.4.0 (`OpticalComponentSpec.light`, `light_satisfies`).
+
 ## [1.6.0]
 ### Added
 - `obcom.optics`: the Optical Path Model v4 reference solver — `parse_graph`

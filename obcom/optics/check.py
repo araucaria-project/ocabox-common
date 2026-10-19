@@ -33,6 +33,7 @@ from datamodels.optics import (
     Settable,
     Verdict,
     VerdictKind,
+    light_satisfies,
     split_state_key,
 )
 
@@ -67,7 +68,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
     collision: Collision | None = None
     applicable = False
     for alt in alternatives:
-        if alt.when is not None and alt.when not in available:
+        if alt.when is not None and not any(light_satisfies(alt.when, c) for c in available):
             continue
         applicable = True
         if _is_active(now, alt, proven):
@@ -78,7 +79,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
         feasible: list[tuple[tuple[int, int, int, int], StaticRoute, dict[str, str]]] = []
         for index, route in enumerate(routes_for_goal(routes, alt)):
             emitted = _terminal_emission(graph, state, route)
-            if emitted is not None and emitted != alt.see:
+            if emitted is not None and not light_satisfies(alt.see, emitted):
                 unavailable = unavailable or alt.see
                 not_emitting.add(route.terminal)
                 if emitted == UNDEFINED:
@@ -156,7 +157,7 @@ def _collateral(graph: OpticalGraph, state: ProvenState, others_now: Mapping[str
 def _is_active(now: frozenset[SeesRecord], alt: GoalSpec, proven: Mapping[str, str | None]) -> bool:
     """Active = the detector sees the goal class from *one* terminal and nothing else, through the
     pinned ``via`` — two lamps of the same class are contamination, as in route enumeration."""
-    if len(now) != 1 or any(r.light_class != alt.see for r in now):
+    if len(now) != 1 or any(not light_satisfies(alt.see, r.light_class) for r in now):
         return False
     for record in now:
         on_path = {record.terminal, *record.via}
