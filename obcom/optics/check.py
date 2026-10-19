@@ -41,7 +41,7 @@ from obcom.optics.graph import OpticalGraph
 from obcom.optics.kinds import Source
 from obcom.optics.routes import StaticRoute, enumerate_routes, routes_for_goal
 from obcom.optics.sees import available_classes, sees, source_emission
-from obcom.optics.state import ProvenState, resolve_axes
+from obcom.optics.state import Hold, ProvenState, resolve_axes
 
 
 class UnknownFunction(LookupError):
@@ -66,6 +66,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
     not_emitting: set[str] = set()
     undefined_sources: set[str] = set()
     collision: Collision | None = None
+    held_unknown: dict[str, Hold] = {}
     applicable = False
     for alt in alternatives:
         if alt.when is not None and not any(light_satisfies(alt.when, c) for c in available):
@@ -86,6 +87,10 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
                     undefined_sources.add(route.terminal)
                 continue
             moves = route.moves_from(proven)
+            blocked = {k: state.holds[k] for k in moves if k in state.holds and state.holds[k].position is None}
+            if blocked:
+                held_unknown.update(blocked)
+                continue
             held = _collision(state, route, moves, alt.see)
             if held is not None:
                 collision = collision or held
@@ -105,6 +110,10 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
     elif unavailable is not None:
         who = ", ".join(sorted(not_emitting)) or "no source"
         reason = f"{who} not providing {unavailable!r} now (available: {have})"
+    elif held_unknown:
+        reason = f"no route to {detector}.{function} can be set now: " + "; ".join(
+            f"{key} is held at an unknown position" + (f" by {hold.holder}" if hold.holder else "")
+            for key, hold in sorted(held_unknown.items()))
     else:
         reason = f"no route to {detector}.{function} can be set now"
     if undefined_at:
@@ -180,7 +189,7 @@ def _terminal_emission(graph: OpticalGraph, state: ProvenState, route: StaticRou
 def _collision(state: ProvenState, route: StaticRoute, moves: Mapping[str, str], see: str) -> Collision | None:
     for key, required in moves.items():
         hold = state.holds.get(key)
-        if hold is not None and hold.position != required:
+        if hold is not None and hold.position is not None and hold.position != required:
             by = f" by {hold.holder}" if hold.holder else ""
             return Collision(
                 kind=VerdictKind.COLLISION,

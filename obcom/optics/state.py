@@ -18,9 +18,11 @@ from obcom.optics.graph import Node, OpticalGraph
 @dataclass(frozen=True)
 class Hold:
     """A selector held by someone (the access grantor's knowledge): ``position`` is what it is held
-    at, ``holder`` who holds it (free text shown to the operator)."""
+    at, ``holder`` who holds it (free text shown to the operator). ``position=None`` holds a
+    selector whose position is unknown (undefined readback): it must not move, so no route that
+    needs it moved is feasible — and, unknown, it validates nothing either."""
 
-    position: str
+    position: str | None
     holder: str | None = None
 
 

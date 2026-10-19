@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.1]
+### Added
+- `obcom.optics.Hold(position=None)`: a selector held at an unknown position (undefined
+  readback) — no route that moves it is feasible, so `check` falls back to another route
+  (broken dome shutter: dark via M3 instead of the dome) or reports `impossible` naming the hold.
+
 ## [1.7.0]
 ### Added
 - `obcom.optics`: sources may declare `light:` (a state within the kind's family, e.g.
