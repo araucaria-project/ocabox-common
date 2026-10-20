@@ -186,7 +186,7 @@ class TestCheckBesoAndTmmt(unittest.TestCase):
         state = ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "calib", "m5": "thar", "thar_lamp": "off"}, sun_alt_deg=-30)
         verdict = check(g, state, "beso", "arc")
         self.assertIsInstance(verdict, Impossible)
-        self.assertIn("thar lamp not providing lamp.thar", verdict.reason)
+        self.assertIn("lamp.thar is not available now: thar lamp gives dark", verdict.reason)
 
     def test_unusable_lamp_telemetry_never_makes_a_route_settable(self):
         g = parse_graph(BESO)

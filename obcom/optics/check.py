@@ -64,7 +64,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
     others_now = {d: sees(graph, state, d) for d in others}
 
     unavailable: str | None = None
-    not_emitting: set[str] = set()
+    not_emitting: dict[str, str] = {}  #: source → what it gives now (undefined: not known)
     undefined_sources: set[str] = set()
     collision: Collision | None = None
     held_unknown: dict[str, Hold] = {}
@@ -83,7 +83,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
             emitted = _terminal_emission(graph, state, route)
             if emitted is not None and not light_satisfies(alt.see, emitted):
                 unavailable = unavailable or alt.see
-                not_emitting.add(route.terminal)
+                not_emitting[route.terminal] = emitted
                 if emitted == UNDEFINED:
                     undefined_sources.add(route.terminal)
                 continue
@@ -105,12 +105,13 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
     if collision is not None:
         return collision
     undefined_at = tuple(sorted({k for k, v in proven.items() if v is None} | {r.terminal for r in now if r.light_class == UNDEFINED} | undefined_sources))
-    have = ", ".join(sorted(available)) or "nothing"
     if not applicable:
-        reason = f"no alternative of {function} applies now (when-conditions unmet; available: {have})"
+        whens = " or ".join(sorted({alt.when for alt in alternatives if alt.when is not None}))
+        reason = f"{function} applies only while {whens} is available"
     elif unavailable is not None:
-        who = ", ".join(sorted(component_label(graph, name) for name in not_emitting)) or "no source"
-        reason = f"{who} not providing {unavailable} now (available: {have})"
+        gives = "; ".join(f"{component_label(graph, name)} " + ("is not known" if emitted == UNDEFINED else f"gives {emitted}")
+                          for name, emitted in sorted(not_emitting.items(), key=lambda item: component_label(graph, item[0])))
+        reason = f"{unavailable} is not available now: {gives or 'no source gives it'}"
     elif held_unknown:
         reason = "; ".join(f"{label(graph, key)}: position unknown ({_cause(graph, state, key)}), cannot be moved"
                            + (f" — held by {hold.holder}" if hold.holder else "")
