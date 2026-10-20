@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.1]
+### Fixed
+- A cycle query's callback without `__name__` (a `functools.partial`, a callable object) no longer
+  kills the callback runner: the runner named it for its debug log outside its `try`, the task died
+  with `AttributeError`, polling went on and no callback ever fired again.
+
 ## [1.10.0]
 ### Changed
 - `schematic()` lays a telescope out as a tidy tree: the light straight on, a switch into branches
