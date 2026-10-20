@@ -28,6 +28,30 @@ COVER_STATUS = {1: "close", 3: "open"}  #: CoverStatus → cover position; 2 is 
 CALIBRATOR_STATUS = {0: "off", 1: "off", 3: "on"}  #: CalibratorStatus → calibrator aspect; 2 is moving, the rest undefined
 SHUTTER_STATE = {0: True, 1: False}  #: ShutterState → shutter open; 2/3 are moving, 4 undefined
 
+#: Alpaca code names, for telling people why a code proves nothing
+COVER_STATUS_NAMES = {0: "NotPresent", 1: "Closed", 2: "Moving", 3: "Open", 4: "Unknown", 5: "Error"}
+CALIBRATOR_STATUS_NAMES = {0: "NotPresent", 1: "Off", 2: "NotReady", 3: "Ready", 4: "Unknown", 5: "Error"}
+SHUTTER_STATE_NAMES = {0: "Open", 1: "Closed", 2: "Opening", 3: "Closing", 4: "Error"}
+
+
+def cover_cause(code: int) -> str | None:
+    """Why a CoverStatus proves no cover position (``None`` when it does, or is plain moving)."""
+    return None if code in COVER_STATUS or code == 2 else _reports("cover", code, COVER_STATUS_NAMES, "CoverStatus")
+
+
+def calibrator_cause(code: int) -> str | None:
+    """Why a CalibratorStatus proves no lamp state (``None`` when it does, or is plain moving)."""
+    return None if code in CALIBRATOR_STATUS or code == 2 else _reports("calibrator", code, CALIBRATOR_STATUS_NAMES, "CalibratorStatus")
+
+
+def shutter_cause(code: int) -> str | None:
+    """Why a ShutterState proves no shutter state — the cause of an undefined dome."""
+    return None if code in SHUTTER_STATE else _reports("shutter", code, SHUTTER_STATE_NAMES, "ShutterState")
+
+
+def _reports(device: str, code: int, names: Mapping[int, str], field_name: str) -> str:
+    return f"{device} reports {names.get(code, 'an unknown code')} ({field_name} {code})"
+
 
 @dataclass(frozen=True)
 class Readings:
@@ -85,6 +109,13 @@ def proven_state(graph: OpticalGraph, readings: Readings, overrides: Mapping[str
     for key, symbol in (overrides or {}).items():
         selectors[key] = SelectorState(position=symbol)
 
+    causes: dict[str, str] = {}
+    for key, code, why in (("covercalibrator", readings.cover_status, cover_cause),
+                           (state_key("covercalibrator", "calibrator"), readings.calibrator_status, calibrator_cause),
+                           ("dome", readings.shutter_state, shutter_cause)):
+        if code is not None and key.partition(".")[0] in graph.nodes and (cause := why(code)) is not None:
+            causes[key] = cause
+
     shutter = SHUTTER_STATE.get(readings.shutter_state) if readings.shutter_state is not None else None
     environment = {
         k: v
@@ -97,4 +128,5 @@ def proven_state(graph: OpticalGraph, readings: Readings, overrides: Mapping[str
         }.items()
         if v is not None
     }
-    return ProvenState.build({k: s.position for k, s in selectors.items()}, moving=[k for k, s in selectors.items() if s.moving], **environment)
+    return ProvenState.build({k: s.position for k, s in selectors.items()}, moving=[k for k, s in selectors.items() if s.moving],
+                             causes=causes, **environment)

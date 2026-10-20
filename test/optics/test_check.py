@@ -127,7 +127,7 @@ class TestCheckJk15(unittest.TestCase):
         state = ProvenState(night(dome=None).selectors, night().environment, holds={"dome": Hold(None, "the operator")})
         verdict = check(self.g, state, "camera", "object")
         self.assertIsInstance(verdict, Impossible)
-        self.assertIn("dome is held at an unknown position by the operator", verdict.reason)
+        self.assertIn("dome: position unknown (reads no declared position), cannot be moved — held by the operator", verdict.reason)
         self.assertIn("dome", verdict.undefined_at)
 
     def test_unknown_function_is_a_caller_error(self):
@@ -186,7 +186,7 @@ class TestCheckBesoAndTmmt(unittest.TestCase):
         state = ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "calib", "m5": "thar", "thar_lamp": "off"}, sun_alt_deg=-30)
         verdict = check(g, state, "beso", "arc")
         self.assertIsInstance(verdict, Impossible)
-        self.assertIn("thar_lamp", verdict.reason)
+        self.assertIn("thar lamp not providing lamp.thar", verdict.reason)
 
     def test_unusable_lamp_telemetry_never_makes_a_route_settable(self):
         g = parse_graph(BESO)

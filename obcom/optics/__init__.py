@@ -6,6 +6,8 @@ Pure functions over ``(graph, proven state)``, no I/O::
     sees(graph, state, "camera")                        # frozenset[SeesRecord]
     check(graph, state, "camera", "object")             # Active | Settable | Collision | Impossible
     resolve(graph, state, "camera", "dark")             # {selector: symbol} | None
+    ribbon(graph, state, "camera")                      # the path to the detector, emitter first
+    schematic(graph)                                    # places and wires on a grid, for every renderer
     compile_telescope(graph) / compile_observatory({...})   # route table + conflict map, verified
 
 Vocabularies and result shapes come from ``datamodels.optics``; the kind → archetype registry is
@@ -38,17 +40,23 @@ from obcom.optics.kinds import (
     default_registry,
 )
 from obcom.optics.routes import StaticRoute, enumerate_routes, routes_for_goal
-from obcom.optics.sees import available_classes, outgoing, sees
-from obcom.optics.state import Hold, ProvenState, Resolved, proven_position, resolve_axes
+from obcom.optics.layout import Place, Schematic, Wire, schematic
+from obcom.optics.ribbon import Ribbon, RibbonStop, StopRole, published_values, ribbon, seen_positions
+from obcom.optics.sees import ValuesOf, available_classes, emerging, outgoing, sees
+from obcom.optics.labels import component_label, label
+from obcom.optics.state import Declaration, Hold, ProvenState, Resolved, proven_position, resolve_axes
 from obcom.optics.telemetry import Readings, proven_state, tertiary_symbol
 
 __all__ = [
     "parse_graph", "validate_graph", "GraphInvalid", "OpticalGraph", "Node", "Feed",
-    "sees", "available_classes", "outgoing",
+    "sees", "available_classes", "outgoing", "emerging", "ValuesOf",
+    "schematic", "Schematic", "Place", "Wire",
+    "ribbon", "Ribbon", "RibbonStop", "StopRole", "published_values", "seen_positions",
     "check", "check_result", "resolve", "UnknownFunction",
     "compile_telescope", "compile_observatory", "authored_hash", "CompileError",
     "enumerate_routes", "routes_for_goal", "StaticRoute",
-    "ProvenState", "Hold", "Resolved", "proven_position", "resolve_axes",
+    "ProvenState", "Hold", "Declaration", "Resolved", "proven_position", "resolve_axes",
+    "label", "component_label",
     "Readings", "proven_state", "tertiary_symbol",
     "KindRegistry", "DEFAULT_REGISTRY", "default_registry", "Kind", "Source", "ConstantSource", "SkySource",
     "Selector", "SelectorShape", "Aspect", "Axis", "DomeKind", "Splitter", "Passive", "Detector",

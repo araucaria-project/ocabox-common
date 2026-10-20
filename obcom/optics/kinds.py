@@ -60,6 +60,8 @@ def is_dark(signal: Signal) -> bool:
 # --- axes --------------------------------------------------------------------------------------
 
 Deriver = Callable[[OpticalComponentSpec, Mapping[str, OpticalComponentSpec], Environment], "str | None"]
+#: Why a deriver yields nothing for this environment, in words for people.
+Explainer = Callable[[OpticalComponentSpec, Mapping[str, OpticalComponentSpec], Environment], str]
 #: The inverse of a deriver for verification: environment fields under which ``derive`` yields the value.
 Exemplifier = Callable[[OpticalComponentSpec, Mapping[str, OpticalComponentSpec], str], dict[str, object]]
 
@@ -75,11 +77,13 @@ class Axis:
     (the sky's sun state) cannot be overridden by a stray ``sky: science`` and instead offers
     ``exemplify``, an environment that derives a wanted value (how ``compile`` verifies a sky route).
     ``actuated`` axes appear in routes as positions to set; the sun is not actuated. An axis with
-    neither telemetry nor derivation is undefined — never assumed."""
+    neither telemetry nor derivation is undefined — never assumed. ``explain`` says, in words for
+    people, why ``derive`` gave nothing."""
 
     name: str | None
     vocabulary: tuple[str, ...]
     derive: Deriver | None = None
+    explain: Explainer | None = None
     reported: bool = True
     exemplify: Exemplifier | None = None
     actuated: bool = True
@@ -237,7 +241,8 @@ class SkySource(Source):
     flat_sun_alt: tuple[float, float] = (-15.0, 1.0)
 
     def axes(self, spec):
-        return (Axis(None, tuple(str(s) for s in SkyState), derive=self._sun_state, reported=False, exemplify=self._sun_for, actuated=False),)
+        return (Axis(None, tuple(str(s) for s in SkyState), derive=self._sun_state, explain=lambda *_: "sun altitude unknown",
+                     reported=False, exemplify=self._sun_for, actuated=False),)
 
     def _sun_state(self, spec, components, env: Environment) -> str | None:
         state = self.sky_state(spec, env.sun_alt_deg)
@@ -436,7 +441,18 @@ class DomeKind(Selector):
     fan_in_positions: frozenset[str] | None = frozenset({"open", "flat"})
 
     def axes(self, spec):
-        return (Axis(None, self.positions(spec), derive=self.derived_position), *(a.axis() for a in self.aspects))
+        return (Axis(None, self.positions(spec), derive=self.derived_position, explain=self.undefined_cause),
+                *(a.axis() for a in self.aspects))
+
+    def undefined_cause(self, spec, components, env: Environment) -> str:
+        """Why :meth:`derived_position` cannot decide — the shutter is not the pointing."""
+        if env.dome_shutter_open is None:
+            return "shutter state unknown"
+        if env.dome_az_deg is None or env.mount_az_deg is None:
+            return "dome or mount azimuth unknown"
+        if (spec.model_extra or {}).get("domeflat_az") is None:
+            return "no flat-screen azimuth (domeflat_az) configured"
+        return "mount altitude or the flat-screen altitude (domeflat_alt) unknown"
 
     def derived_position(self, spec, components, env: Environment) -> str | None:
         if env.dome_shutter_open is None:

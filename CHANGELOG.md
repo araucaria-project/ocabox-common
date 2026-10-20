@@ -3,6 +3,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.0]
+### Added
+- `obcom.optics.labels`: what people call components and their aspects ("mirror covers",
+  "calibration lamp", "M3"; a component sharing its kind keeps its own name); the config's
+  `display.label` / `display.aspects` win.
+- Undefined axes say why: `ProvenState.causes` (the reader's words, e.g. "shutter reports an
+  error (ShutterStatus 4)") else the solver's own (moving, stale, no telemetry, "shutter state
+  unknown" for the dome) — carried by `Resolved.cause`.
+- `obcom.optics.telemetry`: Alpaca code names and `cover_cause` / `calibrator_cause` /
+  `shutter_cause` ("shutter reports Error (ShutterState 4)"); `proven_state` fills the causes.
+- `ProvenState.declared` / `Declaration`: a position a person vouches for fills an otherwise
+  undefined axis (`Resolved.origin == "declared"`, `by`); a reading always wins.
+- `obcom.optics.ribbon`: the path *to a detector*, from the emitter feeding it now (sky, lamp,
+  flat screen) to the detector; when it sees dark or unknown the ribbon goes on past the blocker
+  back to an emitter, choosing at each switch the proven input, else the target's (the selected
+  function's moves), else the first authored one. Works from a `ProvenState` or from the positions
+  a service publishes (`published_values`).
+- `obcom.optics.schematic`: the telescope's optics on a grid for every renderer — authored
+  `display: {x, y}` places, automatic layered layout elsewhere (main line straight, branches
+  below, lamps beside their mirror), orthogonal wires; `Wire.taken`, `Schematic.light`.
+- `obcom.optics.look`: one glyph sprite (`glyphs.svg`), the themes (`tokens.json`: `toi` —
+  observatory white in TOI's palette, `holo` — owies), `glyph_of` (`display.glyph` or the kind's);
+  `obcom.optics.look.svg.schematic_svg` draws the schematic as SVG (config previews, owies reference).
+- `obcom.optics.emerging`: what leaves any component towards a downstream, over any row source
+  (`ValuesOf`) — the walk of `sees`, which now shares it.
+### Changed
+- Verdict reasons are written for people, with labels and causes: "sky.science needs M3 andor,
+  it is beso — held by beso-run"; "unknown: dome (shutter reports an error (ShutterStatus 4))".
+- Requires datamodels >= 0.6.0 (`DisplayHint.label`, `DisplayHint.aspects`, `DisplayHint.glyph`).
+
 ## [1.7.1]
 ### Added
 - `obcom.optics.Hold(position=None)`: a selector held at an unknown position (undefined
