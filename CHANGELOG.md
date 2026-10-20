@@ -3,6 +3,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.0]
+### Added
+- `ProvenState.assumed` / `ProvenState.assuming()`: the positions of a what if, taken as given over
+  telemetry, derivation and declarations (`Resolved.origin == "assumed"`) — the only way to put a
+  derived axis (the sky, the dome) somewhere; `None` assumes an axis unknown.
+- `published_state(selectors)`: what the optics service publishes as `self.selectors` as solver
+  input — `sees`/`check` over it answer as the service does, and a what if starts from it.
+- `OpticalGraph.state_axes`: every state axis with its vocabulary.
+- `look` tokens `status`: the chip of a function's verdict and of the running switch (fill, ink) and
+  the field it sits on, in both themes.
+### Fixed
+- `proven_state(..., overrides)` assumes the overrides, so `sky=day` is no longer silently ignored.
+- A source that gives nothing is "off" in an "impossible" reason ("lamp.thar is not available now:
+  ThAr lamp is off", was "gives dark").
+- An "impossible" verdict names the unknown axes of an undefined terminal ("calibration lamp (no
+  sensor)"), not the component they are part of ("mirror covers (unknown)" while the covers read open).
+
 ## [1.8.2]
 ### Changed
 - "impossible" reasons say what each source gives instead of listing every light class anywhere

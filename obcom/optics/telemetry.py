@@ -88,8 +88,8 @@ def tertiary_symbol(graph: OpticalGraph, port: int | None) -> str | None:
 def proven_state(graph: OpticalGraph, readings: Readings, overrides: Mapping[str, str | None] | None = None) -> ProvenState:
     """Build the proven state of ``graph``'s telescope from ``readings``. A device that was not read
     contributes nothing (its axis stays undefined); a device caught moving is reported moving;
-    ``overrides`` (``{state key: symbol}``) replace whatever the devices say — the "what if" of
-    the CLI, never something a service should do."""
+    ``overrides`` (``{state key: symbol}``) are assumed over whatever the devices say or the
+    environment derives (:attr:`ProvenState.assumed`) — a tool's what if, never a service's."""
     selectors: dict[str, SelectorState] = {}
     if "tertiary" in graph.nodes and (readings.tertiary_port is not None or readings.tertiary_moving):
         selectors["tertiary"] = SelectorState(position=tertiary_symbol(graph, readings.tertiary_port), moving=readings.tertiary_moving, raw=readings.tertiary_port)
@@ -106,8 +106,6 @@ def proven_state(graph: OpticalGraph, readings: Readings, overrides: Mapping[str
     for component, symbol in readings.positions.items():
         if component in graph.nodes:
             selectors[component] = SelectorState(position=symbol)
-    for key, symbol in (overrides or {}).items():
-        selectors[key] = SelectorState(position=symbol)
 
     causes: dict[str, str] = {}
     for key, code, why in (("covercalibrator", readings.cover_status, cover_cause),
@@ -129,4 +127,4 @@ def proven_state(graph: OpticalGraph, readings: Readings, overrides: Mapping[str
         if v is not None
     }
     return ProvenState.build({k: s.position for k, s in selectors.items()}, moving=[k for k, s in selectors.items() if s.moving],
-                             causes=causes, **environment)
+                             causes=causes, assumed=overrides, **environment)

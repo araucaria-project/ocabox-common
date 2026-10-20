@@ -46,6 +46,7 @@ class TestThemes(unittest.TestCase):
         self.assertEqual(set(toi.tokens), set(holo.tokens))
         self.assertEqual(set(toi.line), set(holo.line))
         self.assertEqual(set(toi.light), set(holo.light))
+        self.assertEqual(set(toi.status), set(holo.status))
 
     def test_unknown_theme(self):
         with self.assertRaises(KeyError):
