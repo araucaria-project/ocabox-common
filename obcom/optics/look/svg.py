@@ -13,12 +13,13 @@ from datamodels.optics import DARK, UNDEFINED, Archetype
 
 from obcom.optics.graph import OpticalGraph
 from obcom.optics.labels import component_label
-from obcom.optics.layout import schematic
+from obcom.optics.layout import place_labels, schematic
 from obcom.optics.look import Theme, glyph_of, sprite, theme
 from obcom.optics.sees import ValuesOf
 
-CELL_WIDE, CELL_HIGH = 124, 82  #: a cell: wide enough for a label under its glyph, px
+LANE, LAYER = 64, 76  #: px between lanes (across the light) and layers (along it)
 RADIUS, MARGIN, CORNER = 18, 16, 10
+NAME_PX, STATE_PX, CHAR = 11, 10, 0.58  #: font sizes; a character's width in ems, for measuring without a font
 
 
 def schematic_svg(graph: OpticalGraph, look: str | Theme = "toi", values_of: ValuesOf | None = None,
@@ -28,12 +29,13 @@ def schematic_svg(graph: OpticalGraph, look: str | Theme = "toi", values_of: Val
     t = theme(look) if isinstance(look, str) else look
     layout = schematic(graph)
     columns, rows = layout.columns, layout.rows
-    across, down = (rows, columns) if vertical else (columns, rows)
-    width, height = across * CELL_WIDE + 2 * MARGIN, down * CELL_HIGH + 2 * MARGIN
+    across, down = (rows * LANE, columns * LAYER) if vertical else (columns * LAYER, rows * LANE)
+    width, height = across + 2 * MARGIN, down + 2 * MARGIN
 
     def center(column: float, row: float) -> tuple[float, float]:
-        x, y = (row, column) if vertical else (column, row)
-        return MARGIN + (x + 0.5) * CELL_WIDE, MARGIN + (y + 0.35) * CELL_HIGH
+        if vertical:
+            return MARGIN + (row + 0.5) * LANE, MARGIN + (column + 0.5) * LAYER
+        return MARGIN + (column + 0.5) * LAYER, MARGIN + (row + 0.5) * LANE
 
     light_on = layout.light(graph, values_of) if values_of is not None else {}
     lit_from: dict[str, str] = {}
@@ -46,6 +48,7 @@ def schematic_svg(graph: OpticalGraph, look: str | Theme = "toi", values_of: Val
                 lit_from[wire.upstream] = light
         wires.append(_wire(t, _rounded([center(*p) for p in wire.points]), light))
 
+    texts: dict[str, tuple[str, str, str]] = {}  #: name, state, state colour
     nodes = []
     for name, place in layout.places.items():
         x, y = center(place.column, place.row)
@@ -61,13 +64,24 @@ def schematic_svg(graph: OpticalGraph, look: str | Theme = "toi", values_of: Val
             if node.archetype == Archetype.SELECTOR and values.get(None):
                 state = state or values[None]
         dash = f' stroke-dasharray="{" ".join(map(str, t.ring["dash"]))}"' if dashed else ""
-        weight = ' font-weight="700"' if node.archetype == Archetype.DETECTOR else ""
+        texts[name] = (component_label(graph, name), state, t.unknown if dashed else t.muted)
         nodes.append(
             f'<g class="component" data-name="{escape(name)}">'
             f'<circle cx="{x:g}" cy="{y:g}" r="{RADIUS}" fill="{t.ground}" stroke="{ring}" stroke-width="{ring_width}"{dash}/>'
             f'<use href="#{glyph_of(graph, name)}" x="{x - RADIUS * 1.1:g}" y="{y - RADIUS * 1.1:g}" width="{RADIUS * 2.2:g}" height="{RADIUS * 2.2:g}" style="color:{t.unknown if dashed else t.glyph}"/>'
-            f'<text x="{x:g}" y="{y + RADIUS + 14:g}" text-anchor="middle" font-size="11" fill="{t.text}"{weight}>{escape(component_label(graph, name))}</text>'
-            + (f'<text x="{x:g}" y="{y + RADIUS + 27:g}" text-anchor="middle" font-size="10" fill="{t.unknown if dashed else t.muted}">{escape(state)}</text>' if state else "")
+        )
+
+    sizes = {name: (CHAR * max(NAME_PX * len(label), STATE_PX * len(state)), NAME_PX + 3 + (STATE_PX + 3 if state else 0))
+             for name, (label, state, _) in texts.items()}
+    labels = place_labels(layout, sizes, lambda p: center(*p), RADIUS, (0, 0, width, height))
+    for i, name in enumerate(layout.places):
+        label, state, state_color = texts[name]
+        box = labels[name]
+        anchor, x = {"right": ("start", box.x), "left": ("end", box.x + box.width)}.get(box.side, ("middle", box.x + box.width / 2))
+        weight = ' font-weight="700"' if graph.node(name).archetype == Archetype.DETECTOR else ""
+        nodes[i] += (
+            f'<text x="{x:g}" y="{box.y + NAME_PX:g}" text-anchor="{anchor}" font-size="{NAME_PX}" fill="{t.text}"{weight}>{escape(label)}</text>'
+            + (f'<text x="{x:g}" y="{box.y + NAME_PX + 3 + STATE_PX:g}" text-anchor="{anchor}" font-size="{STATE_PX}" fill="{state_color}">{escape(state)}</text>' if state else "")
             + "</g>"
         )
 

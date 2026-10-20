@@ -3,6 +3,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.0]
+### Changed
+- `schematic()` lays a telescope out as a tidy tree: the light straight on, a switch into branches
+  of equal depth centred between them with a corridor for their labels (M3 between the camera and
+  BESO), a short branch beside its switch on the outer side (a guider off its pick-off), a side
+  feeder beside what it feeds (M5 beside M4), inputs meeting in one component side by side over it
+  (the sky and the flat screen over the dome, the lamps over M5). Rows may be fractional. Into a
+  fan-in a wire runs down, across halfway, down; out of a switch across at its level, then down.
+- `look.svg.schematic_svg` places its labels with `place_labels`.
+### Added
+- `place_labels(layout, sizes, center, radius, bounds)`: every label beside, under or over its
+  component where it covers least of the wires, components and other labels (by area), the most
+  constrained first, then a few rounds of reconsidering; the renderer gives its scale and the sizes
+  it measured.
+
 ## [1.9.0]
 ### Added
 - `ProvenState.assumed` / `ProvenState.assuming()`: the positions of a what if, taken as given over

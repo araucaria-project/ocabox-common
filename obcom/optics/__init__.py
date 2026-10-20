@@ -40,7 +40,7 @@ from obcom.optics.kinds import (
     default_registry,
 )
 from obcom.optics.routes import StaticRoute, enumerate_routes, routes_for_goal
-from obcom.optics.layout import Place, Schematic, Wire, schematic
+from obcom.optics.layout import Label, Place, Schematic, Wire, place_labels, schematic
 from obcom.optics.ribbon import Ribbon, RibbonStop, StopRole, published_values, ribbon, seen_positions
 from obcom.optics.sees import ValuesOf, available_classes, emerging, outgoing, sees
 from obcom.optics.labels import component_label, label
@@ -50,7 +50,7 @@ from obcom.optics.telemetry import Readings, proven_state, tertiary_symbol
 __all__ = [
     "parse_graph", "validate_graph", "GraphInvalid", "OpticalGraph", "Node", "Feed",
     "sees", "available_classes", "outgoing", "emerging", "ValuesOf",
-    "schematic", "Schematic", "Place", "Wire",
+    "schematic", "Schematic", "Place", "Wire", "place_labels", "Label",
     "ribbon", "Ribbon", "RibbonStop", "StopRole", "published_values", "seen_positions",
     "check", "check_result", "resolve", "UnknownFunction",
     "compile_telescope", "compile_observatory", "authored_hash", "CompileError",
