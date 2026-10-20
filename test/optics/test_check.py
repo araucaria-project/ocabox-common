@@ -127,7 +127,7 @@ class TestCheckJk15(unittest.TestCase):
         state = ProvenState(night(dome=None).selectors, night().environment, holds={"dome": Hold(None, "the operator")})
         verdict = check(self.g, state, "camera", "object")
         self.assertIsInstance(verdict, Impossible)
-        self.assertIn("dome: position unknown (reads no declared position), cannot be moved — held by the operator", verdict.reason)
+        self.assertIn("dome: position unknown (its sensor reports no known position), cannot be moved — held by the operator", verdict.reason)
         self.assertIn("dome", verdict.undefined_at)
 
     def test_unknown_function_is_a_caller_error(self):

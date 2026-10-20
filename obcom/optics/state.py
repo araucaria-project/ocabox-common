@@ -45,7 +45,7 @@ class ProvenState:
 
     ``causes`` says, per state key, why the reader could not prove it — in words for people
     ("shutter reports an error (ShutterStatus 4)", "not read: TimeoutError"); an undefined axis
-    without one gets the solver's own explanation (moving, stale, no telemetry …).
+    without one gets the solver's own explanation (moving, out of date, no sensor …).
 
     ``declared`` are positions people vouch for (:class:`Declaration`): the last resort before
     undefined, never over a reading."""
@@ -104,13 +104,13 @@ class Resolved:
 def _unusable(telemetry: SelectorState, vocabulary: tuple[str, ...]) -> str | None:
     """Why a telemetry value proves nothing, ``None`` when it is usable."""
     if telemetry.stale:
-        return "stale reading"
+        return "its sensor reading is out of date"
     if telemetry.moving:
         return "moving"
     if telemetry.position is None:
-        return "reads no declared position"
+        return "its sensor reports no known position"
     if telemetry.position not in vocabulary:
-        return f"reads {telemetry.position!r}, not a declared position"
+        return f"its sensor reports {telemetry.position!r}, not a known position"
     return None
 
 
@@ -139,9 +139,9 @@ def _resolve_axis(graph: OpticalGraph, state: ProvenState, node: Node, axis: Axi
         value = axis.derive(node.spec, graph.components, state.environment)
         if value is not None:
             return Resolved(value, "derived")
-        why = axis.explain(node.spec, graph.components, state.environment) if axis.explain else "cannot be derived"
+        why = axis.explain(node.spec, graph.components, state.environment) if axis.explain else "cannot be worked out"
         return Resolved(None, "undefined", state.causes.get(key, why))
-    return Resolved(None, "undefined", state.causes.get(key, "no telemetry"))
+    return Resolved(None, "undefined", state.causes.get(key, "no sensor"))
 
 
 def axis_values(graph: OpticalGraph, state: ProvenState, node: Node) -> dict[str | None, str | None]:

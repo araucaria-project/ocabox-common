@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.1]
+### Changed
+- The solver's own causes of an undefined axis in plain words for operators: "no sensor" (was
+  "no telemetry"), "its sensor reports no known position", "its sensor reading is out of date",
+  "its sensor reports 'x', not a known position", "cannot be worked out".
+
 ## [1.8.0]
 ### Added
 - `obcom.optics.labels`: what people call components and their aspects ("mirror covers",

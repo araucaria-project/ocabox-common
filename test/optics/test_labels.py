@@ -50,7 +50,7 @@ class TestCauses(unittest.TestCase):
         state = ProvenState.build({"tertiary": "andor"}, moving=["tertiary"], sun_alt_deg=-30)
         self.assertEqual(resolve_axes(self.g, state, self.g.nodes["tertiary"])[None].cause, "moving")
         state = ProvenState.build({"tertiary": "nowhere"}, sun_alt_deg=-30)
-        self.assertEqual(resolve_axes(self.g, state, self.g.nodes["tertiary"])[None].cause, "reads 'nowhere', not a declared position")
+        self.assertEqual(resolve_axes(self.g, state, self.g.nodes["tertiary"])[None].cause, "its sensor reports 'nowhere', not a known position")
 
     def test_reasons_speak_of_what_people_see(self):
         verdict = check(self.g, ProvenState(night(tertiary="beso").selectors, night().environment,
