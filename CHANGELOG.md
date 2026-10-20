@@ -3,6 +3,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.2]
+### Changed
+- "impossible" reasons say what each source gives instead of listing every light class anywhere
+  on the telescope: "sky.science is not available now: sky gives sky.flat", "dark is not available
+  now: ThAr lamp is not known; white lamp is not known"; a function whose every alternative is
+  conditioned says "dark_strict applies only while sky.science is available".
+
 ## [1.8.1]
 ### Changed
 - The solver's own causes of an undefined axis in plain words for operators: "no sensor" (was
