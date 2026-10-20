@@ -44,7 +44,7 @@ from obcom.optics.layout import Place, Schematic, Wire, schematic
 from obcom.optics.ribbon import Ribbon, RibbonStop, StopRole, published_values, ribbon, seen_positions
 from obcom.optics.sees import ValuesOf, available_classes, emerging, outgoing, sees
 from obcom.optics.labels import component_label, label
-from obcom.optics.state import Declaration, Hold, ProvenState, Resolved, proven_position, resolve_axes
+from obcom.optics.state import Declaration, Hold, ProvenState, Resolved, proven_position, published_state, resolve_axes
 from obcom.optics.telemetry import Readings, proven_state, tertiary_symbol
 
 __all__ = [
@@ -55,7 +55,7 @@ __all__ = [
     "check", "check_result", "resolve", "UnknownFunction",
     "compile_telescope", "compile_observatory", "authored_hash", "CompileError",
     "enumerate_routes", "routes_for_goal", "StaticRoute",
-    "ProvenState", "Hold", "Declaration", "Resolved", "proven_position", "resolve_axes",
+    "ProvenState", "Hold", "Declaration", "Resolved", "proven_position", "published_state", "resolve_axes",
     "label", "component_label",
     "Readings", "proven_state", "tertiary_symbol",
     "KindRegistry", "DEFAULT_REGISTRY", "default_registry", "Kind", "Source", "ConstantSource", "SkySource",

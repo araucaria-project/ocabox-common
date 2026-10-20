@@ -48,13 +48,18 @@ class ProvenState:
     without one gets the solver's own explanation (moving, out of date, no sensor …).
 
     ``declared`` are positions people vouch for (:class:`Declaration`): the last resort before
-    undefined, never over a reading."""
+    undefined, never over a reading.
+
+    ``assumed`` are the positions of a *what if* ("with M3 at beso, in daylight"): taken as given
+    over telemetry, derivation and declarations alike — the only way to put a derived axis (the
+    sky, the dome) somewhere. A tool's question, never a service's state."""
 
     selectors: Mapping[str, SelectorState] = field(default_factory=dict)
     environment: Environment = field(default_factory=Environment)
     holds: Mapping[str, Hold] = field(default_factory=dict)
     causes: Mapping[str, str] = field(default_factory=dict)
     declared: Mapping[str, Declaration] = field(default_factory=dict)
+    assumed: Mapping[str, str | None] = field(default_factory=dict)  #: ``None`` assumes the axis unknown
 
     @classmethod
     def build(
@@ -66,6 +71,7 @@ class ProvenState:
         holds: Mapping[str, Hold] | None = None,
         causes: Mapping[str, str] | None = None,
         declared: Mapping[str, Declaration] | None = None,
+        assumed: Mapping[str, str | None] | None = None,
         **environment,
     ) -> "ProvenState":
         """Convenience constructor: ``ProvenState.build({'tertiary': 'andor'}, sun_alt_deg=-30)``.
@@ -78,17 +84,35 @@ class ProvenState:
         for key in (moving | stale) - set(selectors):
             selectors[key] = SelectorState(position=None, moving=key in moving, stale=key in stale)
         return cls(selectors=selectors, environment=Environment(**environment), holds=dict(holds or {}),
-                   causes=dict(causes or {}), declared=dict(declared or {}))
+                   causes=dict(causes or {}), declared=dict(declared or {}), assumed=dict(assumed or {}))
 
     def with_positions(self, positions: Mapping[str, str | None]) -> "ProvenState":
+        """This state after ``positions`` are read — over what was assumed for them too (the
+        world after the moves of a route)."""
         selectors = dict(self.selectors)
         for key, pos in positions.items():
             selectors[key] = SelectorState(position=pos)
-        return replace(self, selectors=selectors)
+        assumed = {key: pos for key, pos in self.assumed.items() if key not in positions}
+        return replace(self, selectors=selectors, assumed=assumed)
+
+    def assuming(self, positions: Mapping[str, str | None]) -> "ProvenState":
+        """This state with ``positions`` assumed on top of the ones already assumed."""
+        return replace(self, assumed={**self.assumed, **positions})
 
     def with_environment(self, **environment) -> "ProvenState":
         merged = {**self.environment.model_dump(exclude_none=True), **environment}
         return replace(self, environment=Environment(**merged))
+
+
+def published_state(selectors: Mapping[str, Mapping]) -> ProvenState:
+    """What the optics service publishes as ``self.selectors`` (``{key: {position, cause, …}}``)
+    as solver input: every position it resolved — read, derived or declared — is taken as given,
+    every undefined axis keeps the service's cause. The start of a what if that agrees with the
+    service; :meth:`ProvenState.assuming` adds the "if"."""
+    return ProvenState(
+        assumed={key: entry["position"] for key, entry in selectors.items() if entry.get("position") is not None},
+        causes={key: entry["cause"] for key, entry in selectors.items() if entry.get("position") is None and entry.get("cause")},
+    )
 
 
 @dataclass(frozen=True)
@@ -96,7 +120,7 @@ class Resolved:
     """The value of one axis, where it came from and, when undefined, why."""
 
     value: str | None  #: ``None`` = undefined
-    origin: str  #: ``telemetry`` | ``derived`` | ``declared`` | ``undefined``
+    origin: str  #: ``telemetry`` | ``derived`` | ``declared`` | ``assumed`` | ``undefined``
     cause: str | None = None  #: why it is undefined — or, when declared, why no reading proves it
     by: str | None = None  #: who declared it
 
@@ -115,13 +139,24 @@ def _unusable(telemetry: SelectorState, vocabulary: tuple[str, ...]) -> str | No
 
 
 def resolve_axes(graph: OpticalGraph, state: ProvenState, node: Node) -> dict[str | None, Resolved]:
-    """Every axis of ``node`` resolved against the proven state: telemetry wins on a reported axis
-    (unusable ⇒ undefined), then derivation from the environment, then a person's declaration,
-    else undefined. An undefined axis carries the reader's cause for its key, else the solver's own."""
+    """Every axis of ``node`` resolved against the proven state: an assumption (what if) wins, then
+    telemetry on a reported axis (unusable ⇒ undefined), then derivation from the environment, then
+    a person's declaration, else undefined. An undefined axis carries the reader's cause for its
+    key, else the solver's own."""
     result: dict[str | None, Resolved] = {}
     for axis in node.axes:
+        key = state_key(node.name, axis.name)
+        if key in state.assumed:
+            assumed = state.assumed[key]
+            if assumed is None:
+                result[axis.name] = Resolved(None, "undefined", "assumed unknown")
+            elif assumed in axis.vocabulary:
+                result[axis.name] = Resolved(assumed, "assumed")
+            else:
+                result[axis.name] = Resolved(None, "undefined", f"assumed {assumed!r}, not a known position")
+            continue
         resolved = _resolve_axis(graph, state, node, axis)
-        declaration = state.declared.get(state_key(node.name, axis.name))
+        declaration = state.declared.get(key)
         if resolved.value is None and declaration is not None and declaration.position in axis.vocabulary:
             resolved = Resolved(declaration.position, "declared", resolved.cause, declaration.by)
         result[axis.name] = resolved

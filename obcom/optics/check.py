@@ -35,6 +35,7 @@ from datamodels.optics import (
     VerdictKind,
     light_satisfies,
     split_state_key,
+    state_key,
 )
 
 from obcom.optics.graph import OpticalGraph
@@ -104,12 +105,13 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
 
     if collision is not None:
         return collision
-    undefined_at = tuple(sorted({k for k, v in proven.items() if v is None} | {r.terminal for r in now if r.light_class == UNDEFINED} | undefined_sources))
+    unknown_terminals = {r.terminal for r in now if r.light_class == UNDEFINED} | undefined_sources
+    undefined_at = tuple(sorted({k for k, v in proven.items() if v is None} | {k for name in unknown_terminals for k in _undefined_axes(graph, state, name)}))
     if not applicable:
         whens = " or ".join(sorted({alt.when for alt in alternatives if alt.when is not None}))
         reason = f"{function} applies only while {whens} is available"
     elif unavailable is not None:
-        gives = "; ".join(f"{component_label(graph, name)} " + ("is not known" if emitted == UNDEFINED else f"gives {emitted}")
+        gives = "; ".join(f"{component_label(graph, name)} " + {UNDEFINED: "is not known", DARK: "is off"}.get(emitted, f"gives {emitted}")
                           for name, emitted in sorted(not_emitting.items(), key=lambda item: component_label(graph, item[0])))
         reason = f"{unavailable} is not available now: {gives or 'no source gives it'}"
     elif held_unknown:
@@ -206,6 +208,13 @@ def _collision(graph: OpticalGraph, state: ProvenState, route: StaticRoute, move
                 reason=f"{see} needs {label(graph, key)} {required}, it is {hold.position}{by}",
             )
     return None
+
+
+def _undefined_axes(graph: OpticalGraph, state: ProvenState, name: str) -> set[str]:
+    """The state keys that make component ``name`` put out ``undefined`` — the calibration lamp, not
+    the mirror covers it is part of; the component itself when no axis of its own is unknown."""
+    keys = {state_key(name, aspect) for aspect, r in resolve_axes(graph, state, graph.nodes[name]).items() if r.value is None}
+    return keys or {name}
 
 
 def _cause(graph: OpticalGraph, state: ProvenState, key: str) -> str:

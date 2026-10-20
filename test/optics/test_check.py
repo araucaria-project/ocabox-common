@@ -84,12 +84,14 @@ class TestCheckJk15(unittest.TestCase):
         self.assertEqual(verdict.unavailable, "sky.science")
         self.assertIn("sky.day", verdict.reason)
 
-    def test_impossible_lists_undefined_terminals(self):
+    def test_impossible_lists_the_unknown_axes(self):
         verdict = check(self.g, ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open"}), "camera", "object")
         self.assertIsInstance(verdict, Impossible)
         self.assertEqual(verdict.undefined_at, ("sky",))
         unreported_lamp = check(self.g, ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "dome": "open"}), "camera", "object")
-        self.assertEqual(unreported_lamp.undefined_at, ("covercalibrator", "covercalibrator.calibrator", "sky"))
+        # the lamp is unknown, not the covers it is part of (they read open)
+        self.assertEqual(unreported_lamp.undefined_at, ("covercalibrator.calibrator", "sky"))
+        self.assertNotIn("mirror covers", unreported_lamp.reason)
 
     def test_domeflat_by_day_moves_the_dome_to_the_screen(self):
         verdict = check(self.g, night(sun_alt_deg=20), "camera", "domeflat")
@@ -186,7 +188,7 @@ class TestCheckBesoAndTmmt(unittest.TestCase):
         state = ProvenState.build({"tertiary": "beso", "covercalibrator": "open", "covercalibrator.calibrator": "off", "dome": "open", "m4": "calib", "m5": "thar", "thar_lamp": "off"}, sun_alt_deg=-30)
         verdict = check(g, state, "beso", "arc")
         self.assertIsInstance(verdict, Impossible)
-        self.assertIn("lamp.thar is not available now: thar lamp gives dark", verdict.reason)
+        self.assertIn("lamp.thar is not available now: thar lamp is off", verdict.reason)
 
     def test_unusable_lamp_telemetry_never_makes_a_route_settable(self):
         g = parse_graph(BESO)

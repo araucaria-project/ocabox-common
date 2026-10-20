@@ -34,6 +34,7 @@ from datamodels.optics import (
     VerdictKind,
     light_satisfies,
     split_state_key,
+    state_key,
 )
 from pydantic import ValidationError
 
@@ -185,6 +186,13 @@ class OpticalGraph:
     @property
     def sources(self) -> tuple[str, ...]:
         return self.of_archetype(Archetype.SOURCE)
+
+    @property
+    def state_axes(self) -> dict[str, tuple[str, ...]]:
+        """Every state axis of the telescope — selectors and sources with a state, read or derived
+        — keyed by state key (``tertiary``, ``covercalibrator.calibrator``, ``sky``), with its
+        vocabulary: what can be declared, assumed or published."""
+        return {state_key(node.name, axis.name): axis.vocabulary for node in self.nodes.values() for axis in node.axes}
 
     def upstream_cone(self, name: str) -> frozenset[str]:
         """Every component light can reach ``name`` from, ``name`` excluded."""
