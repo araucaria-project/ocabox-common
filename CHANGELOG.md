@@ -3,7 +3,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [1.10.2]
+## [1.10.3]
 ### Fixed
 - T0 (`delay` of a cycle query — "not more often than this") is kept by the client, counted from
   the delivery on its own monotonic clock: after a delivery the next request waits until `delay`
@@ -16,7 +16,13 @@ All notable changes to this project will be documented in this file.
   lands within T2 and `is_contact_fresh()` never drops; the pause is capped at the window less
   the floor (a warning when `delay` does not fit). The renewal-credibility and loop-starvation
   thresholds follow the window actually sent. Wire unchanged; the server's gate stays.
-- `ocabox-common_bases.__version_num__` follows the release again (it was left at 1.7.0).
+
+## [1.10.2]
+### Fixed
+- A cycle query whose callback runner died (an exception escaping the per-callback guard) looked
+  alive forever: polling went on, `is_stopped()` stayed False, no callback fired again. The runner's
+  death now stops the query at once with a loud `CALLBACK RUNNER DIED` line, `runner_failure` carries
+  the exception, waiters and consumers see a stopped subscription.
 
 ## [1.10.1]
 ### Fixed
