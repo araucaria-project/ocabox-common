@@ -3,6 +3,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.11.1]
+### Security
+- msgpack `>=1.2.1,<2` (was capped `<1.1.0` since 1.0.0, no recorded reason): GHSA-6v7p-g79w-8964,
+  an out-of-bounds read when a streaming `Unpacker` is reused after an error. The family only calls
+  `packb`/`unpackb` (`MessageSerializer`), so the vulnerable path is not exercised; the floor removes
+  the alert in every consumer (ocabox, ocabox-server, pms, ocabox-tcs resolve msgpack through this
+  package) and lets installs use current wheels (cp311–cp314). Verified: the whole suite passes on
+  msgpack 1.2.3.
+
 ## [1.11.0]
 ### Changed
 - One set of timing defaults, in `obcom.comunication.timing` (one line, one sentence each): T1
