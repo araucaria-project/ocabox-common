@@ -10,6 +10,7 @@ from obcom.data_colection.address import Address
 from obcom.data_colection.response_error import ResponseError
 from obcom.data_colection.tree_user import TreeUser, BaseTreeUser
 from obcom.data_colection.value import Value
+from obcom.comunication import timing
 
 logger = logging.getLogger(__name__.rsplit('.')[-1])
 
@@ -21,16 +22,18 @@ class ValueExchange:
     """
     STANDARD_KEYS: ClassVar[list] = []  # master keys that store essential data
     _CONVERTING_TYPES: ClassVar[list] = [Address, Value, ResponseError, TreeUser]
-    DEFAULT_REQUEST_TIMEOUT: ClassVar[float] = 30.0
-    DEFAULT_TIME_OF_DATA_TOLERANCE: ClassVar[float] = 60.0
+    # The timing defaults live in ``obcom.comunication.timing``; these names stay for the callers
+    # (and tests) that read or patch them here.
+    DEFAULT_REQUEST_TIMEOUT: ClassVar[float] = timing.SINGLE_REQUEST_TIMEOUT
+    DEFAULT_TIME_OF_DATA_TOLERANCE: ClassVar[float] = timing.DEFAULT_REFRESH_AFTER  # T1: one value, wire and cache
     # Floor of the default truth bound (T2). ``2*T1`` alone couples the bound
     # to the refresh cadence: a 0.5 s refresh would give a 1 s bound, which a
     # single scheduling hiccup breaks. The bound has to absorb the transport
     # resolution plus a round-trip budget: the long-poll window is capped at
-    # T2 and the server returns the renewal 0.2*window before the deadline, so
-    # a 5 s bound leaves ~1 s for the round trip. An explicit T2 is never
-    # floored.
-    DEFAULT_MAX_AGE_FLOOR: ClassVar[float] = 5.0
+    # T2 and the server returns the renewal SERVER_MARGIN_FRACTION*window
+    # before the deadline, so the floor is RTT_BUDGET / SERVER_MARGIN_FRACTION.
+    # An explicit T2 is never floored.
+    DEFAULT_MAX_AGE_FLOOR: ClassVar[float] = timing.T2_FLOOR
 
     @classmethod
     def from_dict(cls, dict_):

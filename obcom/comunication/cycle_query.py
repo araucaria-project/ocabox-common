@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 from obcom.comunication.base_client_request_solver import BaseClientRequestSolver
 from obcom.comunication.comunication_error import CommunicationRuntimeError, CommunicationTimeoutError
+from obcom.comunication import timing
 from obcom.comunication.error_policy import (
     Backoff,
     ErrorPolicy,
@@ -28,9 +29,9 @@ def _name_of(callback) -> str:
     return getattr(callback, '__qualname__', None) or getattr(callback, '__name__', None) or repr(callback)
 
 # Delay used in the catch-all ``except Exception`` handler when the policy
-# is SERVICE-style (i.e. NORMAL action = RETRY).  Exposed as a module
-# constant so tests can patch it to 0 without touching asyncio.sleep.
-_CATCH_ALL_RETRY_DELAY = 60.0
+# is SERVICE-style (i.e. NORMAL action = RETRY).  A module attribute (not a
+# direct ``timing`` lookup) so tests can patch it to 0 without touching asyncio.sleep.
+_CATCH_ALL_RETRY_DELAY = timing.CATCH_ALL_RETRY_DELAY
 _ROUTER_TIMEOUT_REASON = 4002
 
 
@@ -88,20 +89,23 @@ class BaseCycleQuery(ABC):
 
     :param client: client object
     :param list_request: list of requests to cycle send
-    :param delay: request delay - minimum interval between responses, default is getting from config file
+    :param delay: T0 — the consumer is not woken more often than this, in seconds. Default: the
+        tightest ``time_of_data_tolerance`` (T1) of the requests — a change is delivered at most once
+        per refresh cadence. ``0`` means no rate cap; negative is an error.
     :param loop: async loop
     :param query_name: cycle query name used to distinguish queries in logs
-    :param max_missed_msg: number of missed messages before stop cycle query. Default is give from config. It can be
-        set from -1 to inf. If it is ste to -1 that mean isn't max missed messages and query will be renewing all time
+    :param max_missed_msg: number of missed messages before stop cycle query. Default
+        ``timing.DEFAULT_MAX_MISSED_MSG``. It can be set from -1 to inf. If it is set to -1 that mean isn't max
+        missed messages and query will be renewing all time
     :param ignore_errors: flag to ignore errors. If the server returns an error other than temporary, the situation
         will be treated as a failed attempt and will be re-requested.
     :raise CommunicationRuntimeError: if not provide async loop and czn not get existing loop
+    :raise ValueError: for a negative ``delay``
     """
 
-    DEFAULT_DELAY = 5
-    DEFAULT_MAX_MISSED_MSG = 3
-    DEFAULT_REQUEST_TIMEOUT = 30
-    WINDOW_FLOOR = 1.0  #: s — the shortest long-poll window: no renewal storm, a window left after a pause
+    DEFAULT_MAX_MISSED_MSG = timing.DEFAULT_MAX_MISSED_MSG
+    DEFAULT_REQUEST_TIMEOUT = timing.UNDECLARED_WINDOW  #: W of a subscription that declares no value policy
+    WINDOW_FLOOR = timing.WINDOW_FLOOR  #: the shortest long-poll window: no renewal storm, a window left after a pause
 
     def __init__(self, crs: BaseClientRequestSolver, list_request: List[ValueRequest], delay: float or None = None,
                  loop=None, query_name: str = 'Default cycle query', max_missed_msg: int = None,
@@ -140,9 +144,15 @@ class BaseCycleQuery(ABC):
         # has not finished unwinding yet) — a harmless double-set with the
         # old Event, but pointless double bookkeeping with the sequence.
         self._stop_notified: bool = False
-        if delay is None or delay <= 0:
-            delay = self.DEFAULT_DELAY
-        self._delay: float = delay
+        # T0 defaults to the client's own T1: a change is delivered at most once per refresh
+        # cadence. An explicit 0 is "no rate cap"; only an explicit delay can fail to fit the
+        # long-poll window (see ConditionalCycleQuery), so remember which one this is.
+        self._delay_explicit: bool = delay is not None
+        if delay is None:
+            delay = min((r.time_of_data_tolerance for r in list_request), default=timing.DEFAULT_REFRESH_AFTER)
+        elif delay < 0:
+            raise ValueError(f'delay must be >= 0 (0 = no rate cap), got {delay}')
+        self._delay: float = float(delay)
         if max_missed_msg is None:
             max_missed_msg = self.DEFAULT_MAX_MISSED_MSG
         self._max_missed_msg: int = max_missed_msg  # can be number from -1 to inf
@@ -345,6 +355,8 @@ class BaseCycleQuery(ABC):
         return True
 
     def __del__(self):
+        if not hasattr(self, '_task'):
+            return  # construction failed (e.g. a negative delay): nothing was started
         self.stop()
         if not self.is_stopped():
             logger.warning(f"{self}: Object cycle query was destroyed before the main task exited. The "
@@ -471,17 +483,19 @@ class PeriodicCycleQuery(BaseCycleQuery):
 
     :param client: client object
     :param list_request: list of requests to cycle send
-    :param delay: request delay - minimum interval between responses, default is getting from config file
+    :param delay: the period, in seconds; default the tightest ``time_of_data_tolerance`` of the requests,
+        never shorter than ``timing.PERIODIC_MIN_DELAY``
     :param loop: async loop
     :param query_name: cycle query name used to distinguish queries in logs
-    :param max_missed_msg: number of missed messages before stop cycle query. Default is give from config. It can be
-        set from -1 to inf. If it is ste to -1 that mean isn't max missed messages and query will be renewing all time
+    :param max_missed_msg: number of missed messages before stop cycle query. Default
+        ``timing.DEFAULT_MAX_MISSED_MSG``. It can be set from -1 to inf. If it is set to -1 that mean isn't max
+        missed messages and query will be renewing all time
     :param log_missed_msg: If is False missed messages will be skipped. Default False.
         Used only when is `only_new_data` set to False
     :raise CommunicationRuntimeError: if not provide async loop and czn not get existing loop
     """
 
-    _DEFAULT_MIN_DELAY = 0.5
+    _DEFAULT_MIN_DELAY = timing.PERIODIC_MIN_DELAY
 
     def __init__(self, crs: BaseClientRequestSolver, list_request: List[ValueRequest], delay: float or None = None,
                  loop=None, log_missed_msg: bool = False, query_name: str = 'Default periodic query',
@@ -491,7 +505,9 @@ class PeriodicCycleQuery(BaseCycleQuery):
         self._log_missed_msg: bool = log_missed_msg
         self._min_delay = self._DEFAULT_MIN_DELAY
         if self._delay < self._min_delay:
-            logger.warning(f"delay value is to low. Will by set to {self._min_delay}")
+            logger.warning(f"{self}: delay {self._delay}s is below the shortest period {self._min_delay}s "
+                           f"— using {self._min_delay}s")
+            self._delay = self._min_delay
 
     async def _send_message(self):
         missed = 0
@@ -573,13 +589,16 @@ class ConditionalCycleQuery(BaseCycleQuery):
 
     :param client: client object
     :param list_request: list of requests to cycle send
-    :param delay: request delay - minimum interval between responses, default is getting from config file
+    :param delay: T0 — the consumer is not woken more often than this, paced by this client after each
+        delivery (``_pace``). Default: the tightest ``time_of_data_tolerance`` (T1) of the requests; ``0`` = no
+        rate cap. An explicit delay longer than the long-poll window less ``WINDOW_FLOOR`` is clipped (warning).
     :param loop: async loop
     :param query_name: cycle query name used to distinguish queries in logs
-    :param max_missed_msg: number of missed messages before stop cycle query. Default is give from config. It can be
-        set from -1 to inf. If it is ste to -1 that mean isn't max missed messages and query will be renewing all time
-    :param request_timeout: The maximum waiting time for a response from the router, exceeding this time means that
-        there are communication problems or the router is turned off. Recommended to leave the default value
+    :param max_missed_msg: number of missed messages before stop cycle query. Default
+        ``timing.DEFAULT_MAX_MISSED_MSG``. It can be set from -1 to inf. If it is set to -1 that mean isn't max
+        missed messages and query will be renewing all time
+    :param request_timeout: W — the long-poll window; default ``timing.UNDECLARED_WINDOW``, capped at T2 for a
+        subscription declaring ``value_policy`` NONE. Recommended to leave the default value
     :param ignore_errors: flag to ignore errors. If the server returns an error other than temporary, the situation
         will be treated as a failed attempt and will be re-requested.
     :raise CommunicationRuntimeError: if not provide async loop and czn not get existing loop
@@ -638,7 +657,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # reply margin exceeds the whole request window (obsrv#44) — and must
         # NOT feed the T2 clock, or a livelock of instant renewals starves
         # the consumer of both values and the honest stale-None (obcom#13).
-        self._renewal_credible_after: float = 0.5 * self._timeout
+        self._renewal_credible_after: float = timing.RENEWAL_CREDIBLE_FRACTION * self._timeout
         # The T2 clock runs from the last *healthy contact* — a batch of
         # real values or a 4004 long-poll renewal (server alive, value
         # unchanged-and-fresh). It deliberately does NOT run from the last
@@ -661,7 +680,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # bound: at most the window less WINDOW_FLOOR, so the first request
         # after it still has a window in which its renewal lands (``_next_window``).
         self._pace_for: float = min(self._delay, max(0.0, self._timeout - self.WINDOW_FLOOR))
-        if self._pace_for < self._delay:
+        if self._pace_for < self._delay and self._delay_explicit:
+            # the derived default (T1) always fits: T2 = max(2·T1, T2_FLOOR) leaves at least T1 after the floor
             logger.warning(f"{self}: delay {self._delay}s does not fit the long-poll window {self._timeout}s "
                            f"— pacing at most {self._pace_for}s")
         # Router-silence warnings are throttled for opted-in subscriptions
@@ -724,7 +744,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
         if poll_started is None:
             return False, 0.0, 0.0
         wake_lag = time.monotonic() - (poll_started + self._window)
-        lag_threshold = max(0.5, 0.1 * self._window)
+        lag_threshold = max(timing.STARVATION_LAG_FLOOR, timing.STARVATION_LAG_FRACTION * self._window)
         return wake_lag > lag_threshold, wake_lag, lag_threshold
 
     async def _send_message(self):
@@ -826,7 +846,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         # 4004 is the server refusing work (see __init__).
                         if batch_healthy and (
                                 time.monotonic() - poll_started
-                                >= min(self._renewal_credible_after, 0.5 * self._window)):  # of the window sent
+                                >= min(self._renewal_credible_after,
+                                       timing.RENEWAL_CREDIBLE_FRACTION * self._window)):  # of the window sent
                             self._last_contact_ts = time.monotonic()
                             saw_credible_renewal = True
                         if last_error_code is None:

@@ -98,7 +98,7 @@ class BaseClientAPI(ABC):
         :param address: address
         :param time_of_data_tolerance: how old data can be returned. This time should be greater than that specified
             in config file for `TreeConditionalFreezer` object
-        :param delay: request delay, minimum interval between responses
+        :param delay: T0 — minimum interval between deliveries; default the T1 of this request
         :param parameters_dict: dict of parameters to send witch request GET/PUT/etc...
         :param name: name of the subscription
         :param max_missed_msg: more information in :class:`.cycle_query.ConditionalCycleQuery`
@@ -113,8 +113,6 @@ class BaseClientAPI(ABC):
             floored at ``ValueRequest.DEFAULT_MAX_AGE_FLOOR``).
         :return: object `ConditionalCycleQuery`
         """
-        if time_of_data_tolerance is None and delay:
-            time_of_data_tolerance = delay
         if parameters_dict is None:
             parameters_dict = {}
         request = ValueRequest(address=address,
@@ -141,7 +139,7 @@ class BaseClientAPI(ABC):
         :param address: address
         :param time_of_data_tolerance: how old data can be returned. This time should be greater than that specified
             in config file for `TreeConditionalFreezer` object
-        :param delay: request delay, minimum interval between responses
+        :param delay: T0 — minimum interval between deliveries; default the T1 of this request
         :param parameters_dict: dict of parameters to send witch request GET/PUT/etc...
         :param name: name of the subscription
         :param max_missed_msg: more information in :class:`.cycle_query.ConditionalCycleQuery`
@@ -200,15 +198,13 @@ class BaseClientAPI(ABC):
 
         :param address: address
         :param time_of_data_tolerance: how old data can be returned.
-        :param delay: request delay
+        :param delay: the period; default the T1 of this request
         :param log_missed_msg: If is False missed messages will be skipped. Default False
         :param parameters_dict: dict of parameters to send witch request GET/PUT/etc...
         :param name: name of the subscription
         :param max_missed_msg: more information in :class:`.cycle_query.ConditionalCycleQuery`
         :return: object PeriodicCycleQuery
         """
-        if not time_of_data_tolerance and delay:
-            time_of_data_tolerance = delay
         if parameters_dict is None:
             parameters_dict = {}
         request = ValueRequest(address=address,

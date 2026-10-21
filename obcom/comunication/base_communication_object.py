@@ -2,6 +2,7 @@ import logging
 from abc import ABC
 from obcom.comunication.comunication_error import CommunicationTimeoutError
 from obcom.comunication.multipart_structure import MultipartStructure
+from obcom.comunication import timing
 
 logger = logging.getLogger(__name__.rsplit('.')[-1])
 
@@ -12,7 +13,7 @@ class BaseCommunicationObject(ABC):
 
     def __init__(self, name: str = None, **kwargs):
         self._name = name if name else self.DEFAULT_NAME
-        self.default_timeout = 30
+        self.default_timeout = timing.SINGLE_REQUEST_TIMEOUT
 
     @property
     def name(self):

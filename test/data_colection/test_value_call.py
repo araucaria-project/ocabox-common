@@ -1,5 +1,7 @@
 import time
 import unittest
+
+from obcom.comunication import timing
 from obcom.data_colection.address import Address
 from obcom.data_colection.response_error import ResponseError
 from obcom.data_colection.tree_user import TreeUser, TreeServiceUser
@@ -72,11 +74,10 @@ class ValueRequestTest(unittest.TestCase):
         self.assertDictEqual(out_dict, expected_dict)
 
     def test_default_config(self):
-        expected_time_of_data_tolerance = 60
         vr = ValueRequest('aaa.bbb.ccc')
-        # request_timeout
-        self.assertEqual(expected_time_of_data_tolerance, vr.time_of_data_tolerance)
-        self.assertTrue(type(vr.time_of_data_tolerance) == int or float)
+        # time_of_data_tolerance (T1): the one family default, cache and wire alike
+        self.assertEqual(timing.DEFAULT_REFRESH_AFTER, vr.time_of_data_tolerance)
+        self.assertIsInstance(vr.time_of_data_tolerance, float)
         # time_of_data_tolerance
         self.assertTrue(isinstance(vr.time_of_data, float))
 
