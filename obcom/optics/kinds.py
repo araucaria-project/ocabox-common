@@ -166,6 +166,13 @@ class Kind:
         malformed threshold is an ``invalid_option`` verdict, never a ``TypeError`` at 3 a.m."""
         return []
 
+    def meaning(self, spec: OpticalComponentSpec, components: Mapping[str, OpticalComponentSpec],
+                aspect: str | None, symbol: str) -> str | None:
+        """What it takes for an axis to be at ``symbol``, in words for the operator who has to make it
+        so — for a position nobody selects directly (the dome's ``flat`` is the telescope pointing
+        at the screen); ``None`` when the symbol says it all."""
+        return None
+
 
 # --- sources: no inputs, one output, the emission decided by the kind ------------------------------
 
@@ -198,14 +205,17 @@ class Source(Kind):
 class ConstantSource(Source):
     """Emits one class whenever it is on the path: the kind's family (``lamp``), or the state the
     config declares within it (``light: lamp.thar``) — a goal ``lamp`` accepts any lamp, ``lamp.thar``
-    that one. ``switchable`` sources (lamps) have a power axis: proven ``on`` ⇒ the class, proven
-    ``off`` ⇒ dark, unreported or unusable ⇒ undefined — a lamp nobody has seen lit certifies no arc."""
+    that one. ``switchable`` sources (lamps, the flat screen's lamps) have a power axis: proven ``on``
+    ⇒ the class, proven ``off`` ⇒ dark, unreported or unusable ⇒ undefined — a lamp nobody has seen
+    lit certifies no arc, and nobody's word but a person's (a declaration) lights one without a
+    sensor. A ``point`` source (a lamp) has one physical output; the others fill every aperture."""
 
     emits: str = ""
     switchable: bool = False
+    point: bool = False
 
     def ambient(self, spec):
-        return not self.switchable
+        return not self.point
 
     def light(self, spec: OpticalComponentSpec) -> str:
         """The class this component emits: ``light:`` from the config, else the kind's family."""
@@ -423,12 +433,13 @@ def _angular_distance(a: float, b: float) -> float:
 
 @dataclass(frozen=True)
 class DomeKind(Selector):
-    """The dome is a *derived* fan-in selector between the sky and the flat screen: shutter
-    closed ⇒ ``closed`` (dark); open and mount + dome at the screen (``domeflat_az`` on the dome,
-    ``domeflat_az_offset`` / ``domeflat_alt`` on the mount — values already in config) ⇒ ``flat``;
-    otherwise ``open``. Undecidable (no shutter state; pointing unknown or no altitude target
-    while a ``flat`` input exists) ⇒ undefined. Input names are fixed by the kind so that the
-    derivation and the authored ``inputs:`` agree."""
+    """The dome is a *derived* fan-in selector between the sky and the flat screen: mount + dome at
+    the screen (``domeflat_az`` on the dome, ``domeflat_az_offset`` / ``domeflat_alt`` on the
+    mount — values already in config) ⇒ ``flat``, whatever the shutter (the screen hangs inside: dome
+    flats are taken with the shutter closed); away from it the shutter decides, closed ⇒ ``closed``
+    (dark), open ⇒ ``open``. Undecidable — the pointing unknown or no altitude target while a
+    ``flat`` input exists, or away from the screen with no shutter state — ⇒ undefined. Input names
+    are fixed by the kind so that the derivation and the authored ``inputs:`` agree."""
 
     OPEN: ClassVar[str] = "open"
     FLAT: ClassVar[str] = "flat"
@@ -445,37 +456,63 @@ class DomeKind(Selector):
                 *(a.axis() for a in self.aspects))
 
     def undefined_cause(self, spec, components, env: Environment) -> str:
-        """Why :meth:`derived_position` cannot decide — the shutter is not the pointing."""
-        if env.dome_shutter_open is None:
-            return "shutter state unknown"
-        if env.dome_az_deg is None or env.mount_az_deg is None:
-            return "dome or mount azimuth unknown"
-        if (spec.model_extra or {}).get("domeflat_az") is None:
-            return "no flat-screen azimuth (domeflat_az) configured"
-        return "mount altitude or the flat-screen altitude (domeflat_alt) unknown"
+        """Why :meth:`derived_position` cannot decide — the pointing first, then the shutter."""
+        if self._at_screen(spec, components, env) is None:
+            if env.dome_az_deg is None or env.mount_az_deg is None:
+                return "dome or mount azimuth unknown"
+            if (spec.model_extra or {}).get("domeflat_az") is None:
+                return "no flat-screen azimuth (domeflat_az) configured"
+            return "mount altitude or the flat-screen altitude (domeflat_alt) unknown"
+        return "shutter state unknown"
 
     def derived_position(self, spec, components, env: Environment) -> str | None:
+        at_screen = self._at_screen(spec, components, env)
+        if at_screen is None:
+            return None
+        if at_screen:
+            return self.FLAT
         if env.dome_shutter_open is None:
             return None
-        if not env.dome_shutter_open:
-            return self.CLOSED
-        if self.FLAT not in self.inputs(spec):
-            return self.OPEN
-        extra = spec.model_extra or {}
-        domeflat_az = extra.get("domeflat_az")
+        return self.OPEN if env.dome_shutter_open else self.CLOSED
+
+    def meaning(self, spec, components, aspect, symbol):
+        if aspect is not None:
+            return None
+        if symbol == self.FLAT:
+            target = self._screen(spec, components)
+            if target is None:
+                return "the telescope at the flat screen"
+            dome_az, mount_az, mount_alt = target
+            alt = f" alt {mount_alt:g}°" if mount_alt is not None else ""
+            return f"the telescope at the flat screen: dome at {dome_az:g}°, telescope at az {mount_az:g}°{alt}"
+        return {self.OPEN: "the shutter open, away from the flat screen",
+                self.CLOSED: "the shutter closed, away from the flat screen"}.get(symbol)
+
+    def _screen(self, spec, components) -> tuple[float, float, float | None] | None:
+        """(dome az, mount az, mount alt) of the flat screen from the config; ``None`` without it."""
+        domeflat_az = (spec.model_extra or {}).get("domeflat_az")
+        if domeflat_az is None:
+            return None
         mount = next((c for c in components.values() if c.kind == "telescope"), None)
         mount_extra = (mount.model_extra or {}) if mount is not None else {}
-        if domeflat_az is None or env.dome_az_deg is None or env.mount_az_deg is None:
-            return None
-        tol = float(extra.get("slew_tolerance", self.DEFAULT_TOLERANCE_DEG))
-        mount_flat_az = float(domeflat_az) + float(mount_extra.get("domeflat_az_offset", 0.0))
-        at_screen_az = _angular_distance(env.dome_az_deg, float(domeflat_az)) <= tol and _angular_distance(env.mount_az_deg, mount_flat_az) <= tol
-        if not at_screen_az:
-            return self.OPEN  # demonstrably away from the screen: the altitude does not matter
         flat_alt = mount_extra.get("domeflat_alt")
-        if flat_alt is None or env.mount_alt_deg is None:
-            return None  # at the screen azimuth: flat or open is undecidable without the altitude target and readback
-        return self.FLAT if abs(env.mount_alt_deg - float(flat_alt)) <= tol else self.OPEN
+        mount_az = (float(domeflat_az) + float(mount_extra.get("domeflat_az_offset", 0.0))) % 360.0
+        return float(domeflat_az), mount_az, None if flat_alt is None else float(flat_alt)
+
+    def _at_screen(self, spec, components, env: Environment) -> bool | None:
+        """Mount and dome at the flat screen; ``None`` when that cannot be decided."""
+        if self.FLAT not in self.inputs(spec):
+            return False
+        target = self._screen(spec, components)
+        if target is None or env.dome_az_deg is None or env.mount_az_deg is None:
+            return None
+        dome_az, mount_az, mount_alt = target
+        tol = float((spec.model_extra or {}).get("slew_tolerance", self.DEFAULT_TOLERANCE_DEG))
+        if _angular_distance(env.dome_az_deg, dome_az) > tol or _angular_distance(env.mount_az_deg, mount_az) > tol:
+            return False  # demonstrably away from the screen: the altitude does not matter
+        if mount_alt is None or env.mount_alt_deg is None:
+            return None  # at the screen azimuth: flat or not is undecidable without the altitude target and readback
+        return abs(env.mount_alt_deg - mount_alt) <= tol
 
     def validate(self, spec, components):
         problems: list[str] = []
@@ -587,8 +624,8 @@ COVER_CALIBRATOR = Selector(
 def default_registry() -> KindRegistry:
     reg = KindRegistry()
     reg.register(SkySource())
-    reg.register(ConstantSource(name="flatscreen", emits=str(SourceFamily.FLATSCREEN)))
-    reg.register(ConstantSource(name="lamp", emits=str(SourceFamily.LAMP), switchable=True))
+    reg.register(ConstantSource(name="flatscreen", emits=str(SourceFamily.FLATSCREEN), switchable=True))
+    reg.register(ConstantSource(name="lamp", emits=str(SourceFamily.LAMP), switchable=True, point=True))
     reg.register(ConstantSource(name="beamdump", emits=DARK))
     reg.register(DomeKind())
     reg.register(COVER_CALIBRATOR)
