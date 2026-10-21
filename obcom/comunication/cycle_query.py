@@ -21,6 +21,12 @@ from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__.rsplit('.')[-1])
 
+
+def _name_of(callback) -> str:
+    """A callback's name for the log — any callable: a ``functools.partial`` or a callable
+    object has no ``__name__``, and a log line must never be what kills the callback runner."""
+    return getattr(callback, '__qualname__', None) or getattr(callback, '__name__', None) or repr(callback)
+
 # Delay used in the catch-all ``except Exception`` handler when the policy
 # is SERVICE-style (i.e. NORMAL action = RETRY).  Exposed as a module
 # constant so tests can patch it to 0 without touching asyncio.sleep.
@@ -393,7 +399,7 @@ class BaseCycleQuery(ABC):
 
             for a_method in self._callback_methods_a:
                 if callable(a_method):
-                    logger.debug(f"{self}: Execute callback {a_method.__name__}")
+                    logger.debug("%s: Execute callback %s", self, _name_of(a_method))
                     try:
                         await a_method(result)
                     except Exception as e:
@@ -409,19 +415,19 @@ class BaseCycleQuery(ABC):
                         # propagate so task cancellation works correctly
                         # (CancelledError is BaseException since Python 3.8).
                         logger.exception(
-                            f"{self}: async callback {a_method.__name__} raised "
+                            f"{self}: async callback {_name_of(a_method)} raised "
                             f"unhandled {type(e).__name__}: {e}. Continuing — the "
                             f"subscription stays alive."
                         )
 
             for method in self._callback_methods:
                 if callable(method):
-                    logger.debug(f"{self}: Execute callback {method.__name__}")
+                    logger.debug("%s: Execute callback %s", self, _name_of(method))
                     try:
                         method(result)
                     except Exception as e:
                         logger.exception(
-                            f"{self}: sync callback {method.__name__} raised "
+                            f"{self}: sync callback {_name_of(method)} raised "
                             f"unhandled {type(e).__name__}: {e}. Continuing."
                         )
 
