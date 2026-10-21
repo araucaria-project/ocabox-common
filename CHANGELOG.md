@@ -10,8 +10,12 @@ All notable changes to this project will be documented in this file.
   has passed. The echoed `no_send_before = ts + delay` alone anchored it on the device read, so
   beside a faster subscriber the value served was already old and the server's gate opened early
   (jk15 M3: `delay=1` answered every 0.51 s; with this, every 1.01 s). After a 4004 renewal, an
-  error or a timeout the next request still goes at once. The pause is capped at T2 for a client
-  that declared one (a warning when `delay` exceeds it). Wire unchanged; the server's gate stays.
+  error, a timeout or a server-delivered None the next request still goes at once. The pause comes
+  out of the long-poll window, never out of the truth bound: the first request after it gets the
+  window left counted from the delivery (floored at `WINDOW_FLOOR`, 1 s), so its 4004 renewal still
+  lands within T2 and `is_contact_fresh()` never drops; the pause is capped at the window less
+  the floor (a warning when `delay` does not fit). The renewal-credibility and loop-starvation
+  thresholds follow the window actually sent. Wire unchanged; the server's gate stays.
 - `ocabox-common_bases.__version_num__` follows the release again (it was left at 1.7.0).
 
 ## [1.10.1]

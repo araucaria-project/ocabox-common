@@ -101,6 +101,7 @@ class BaseCycleQuery(ABC):
     DEFAULT_DELAY = 5
     DEFAULT_MAX_MISSED_MSG = 3
     DEFAULT_REQUEST_TIMEOUT = 30
+    WINDOW_FLOOR = 1.0  #: s — the shortest long-poll window: no renewal storm, a window left after a pause
 
     def __init__(self, crs: BaseClientRequestSolver, list_request: List[ValueRequest], delay: float or None = None,
                  loop=None, query_name: str = 'Default cycle query', max_missed_msg: int = None,
@@ -586,7 +587,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
             # renewals then arrive within T2 and keep the contact clock alive
             # (no false staleness, old or new server). Floor of 1s so a very
             # tight explicit T2 does not turn into a renewal storm.
-            window = max(1.0, self._tightest_t2())
+            window = max(self.WINDOW_FLOOR, self._tightest_t2())
             if window < self._timeout:
                 self._timeout = window
                 for r in self._list_request:
@@ -624,12 +625,16 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # own monotonic clock, after each delivery (see ``_pace``). Never longer
         # than T2: a pause is time without a request in flight, so it must not
         # eat the truth window of a client that declared one.
-        self._delivered_mono: Optional[float] = None
-        self._pace_for: float = self._delay
-        if self._stale_opt_in and self._delay > self._tightest_t2():
-            logger.warning(f"{self}: delay {self._delay}s exceeds the truth bound T2 "
-                           f"{self._tightest_t2()}s — pacing at most T2")
-            self._pace_for = self._tightest_t2()
+        self._delivered_mono: Optional[float] = None  # the last delivery of a value
+        self._paced_from: Optional[float] = None  # the delivery the next request's window counts from
+        self._window: float = self._timeout  # the long-poll window of the request in flight
+        # The pause comes out of the long-poll window, never out of the truth
+        # bound: at most the window less WINDOW_FLOOR, so the first request
+        # after it still has a window in which its renewal lands (``_next_window``).
+        self._pace_for: float = min(self._delay, max(0.0, self._timeout - self.WINDOW_FLOOR))
+        if self._pace_for < self._delay:
+            logger.warning(f"{self}: delay {self._delay}s does not fit the long-poll window {self._timeout}s "
+                           f"— pacing at most {self._pace_for}s")
         # Router-silence warnings are throttled for opted-in subscriptions
         # (the tolerance clock, not the operator, owns the outage there).
         self._timeout_log_state: _LogPolicyState = self._error_policy.normal.log.make_state()
@@ -689,8 +694,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
         """
         if poll_started is None:
             return False, 0.0, 0.0
-        wake_lag = time.monotonic() - (poll_started + self._timeout)
-        lag_threshold = max(0.5, 0.1 * self._timeout)
+        wake_lag = time.monotonic() - (poll_started + self._window)
+        lag_threshold = max(0.5, 0.1 * self._window)
         return wake_lag > lag_threshold, wake_lag, lag_threshold
 
     async def _send_message(self):
@@ -701,6 +706,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
         while True:
             await self._pace()
             start_time = time.time()
+            self._window = self._next_window()
 
             # update request data
             self._update_request_data()
@@ -712,7 +718,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 # one monotonic stamp serves both consumers: the renewal
                 # credibility gate (obcom#13) and starvation detection (#11)
                 poll_started = time.monotonic()
-                result = await self._CRS.send_request(requests=requests, timeout=start_time + self._timeout,
+                result = await self._CRS.send_request(requests=requests, timeout=start_time + self._window,
                                                       no_wait=False)
                 self._starvation_episode_active = False
                 self._errors = None
@@ -790,7 +796,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
                         # real long-poll wait confirms anything; an instant
                         # 4004 is the server refusing work (see __init__).
                         if batch_healthy and (
-                                time.monotonic() - poll_started >= self._renewal_credible_after):
+                                time.monotonic() - poll_started
+                                >= min(self._renewal_credible_after, 0.5 * self._window)):  # of the window sent
                             self._last_contact_ts = time.monotonic()
                             saw_credible_renewal = True
                         if last_error_code is None:
@@ -924,7 +931,8 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     await asyncio.sleep(0)
                     continue
                 self._notify_response()
-                self._delivered_mono = time.monotonic()
+                if saw_value:  # a None is a verdict, not a change the consumer needs throttling from
+                    self._delivered_mono = time.monotonic()
             except CommunicationRuntimeError as e:
                 self._errors = e
                 if not not_clear_result:
@@ -1018,10 +1026,24 @@ class ConditionalCycleQuery(BaseCycleQuery):
         server cannot tell those apart, which is why T0 lives here."""
         if self._delivered_mono is None:
             return
-        rest = self._pace_for - (time.monotonic() - self._delivered_mono)
-        self._delivered_mono = None
+        self._paced_from, self._delivered_mono = self._delivered_mono, None
+        rest = self._pace_for - (time.monotonic() - self._paced_from)
         if rest > 0:
             await asyncio.sleep(rest)
+
+    def _next_window(self) -> float:
+        """The long-poll window of the next request: the full one, or — right
+        after a paced delivery — what is left of it counted from the delivery
+        (floored at ``WINDOW_FLOOR`` from the send). A NONE client's window is
+        T2 so that a credible 4004 renewal (at ~0.8·window) resets the contact
+        clock *inside* the truth bound; a window counted from the send would
+        land it ``pause`` later, past T2, and report lost contact after every
+        delivery. The pause is the client's own choice, so it comes out of the
+        window, not out of the truth bound."""
+        paced_from, self._paced_from = self._paced_from, None
+        if paced_from is None:
+            return self._timeout
+        return max(self.WINDOW_FLOOR, self._timeout - (time.monotonic() - paced_from))
 
     def _tightest_t2(self) -> float:
         """Whole-batch truth bound: the tightest T2 in force across the batch."""
