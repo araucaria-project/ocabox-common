@@ -81,8 +81,7 @@ class TestCycleQueryRunnerDeath(unittest.IsolatedAsyncioTestCase):
             finally:
                 await cq.stop_and_wait()
 
-    async def test_raising_callback_is_still_contained(self):
-        # Sync callback
+    async def test_raising_sync_callback_is_still_contained(self):
         crs = ScriptedSolver([[make_ok_response(v=1)], [make_ok_response(v=2)]])
         cq = ConditionalCycleQuery(crs=crs, list_request=[make_request()], delay=0.01)
         calls_sync = []
@@ -110,7 +109,7 @@ class TestCycleQueryRunnerDeath(unittest.IsolatedAsyncioTestCase):
 
             await cq.stop_and_wait()
 
-        # Async callback
+    async def test_raising_async_callback_is_still_contained(self):
         crs_async = ScriptedSolver([[make_ok_response(v=1)], [make_ok_response(v=2)]])
         cq_async = ConditionalCycleQuery(crs=crs_async, list_request=[make_request()], delay=0.01)
         calls_async = []

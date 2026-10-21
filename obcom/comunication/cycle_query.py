@@ -245,9 +245,6 @@ class BaseCycleQuery(ABC):
                 await asyncio.shield(self._delivery_fut)
             if self._errors:
                 raise self._errors
-            if self.is_stopped() or self._task.done():
-                raise CommunicationRuntimeError(message=f"{self}: Query was stopped. before waiting for a reply "
-                                                        f"you have to run them first")
             return self._delivered_response
         raise CommunicationRuntimeError(message=f"{self}: Query was stopped. before waiting for a reply "
                                                 f"you have to run them first")
@@ -305,6 +302,7 @@ class BaseCycleQuery(ABC):
         if self.is_stopped():
             self._stop_reason = None
             self._runner_failure = None
+            self._errors = None
             self._run()
             self._run_callbacks()
         else:
@@ -326,13 +324,13 @@ class BaseCycleQuery(ABC):
         if self._task:
             try:
                 await self._task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
         if self._callback_task:
             try:
                 await self._callback_task
             except (asyncio.CancelledError, Exception):
-                pass
+                pass  # retrieved and logged in _on_callback_runner_done; see runner_failure
 
     def is_stopped(self):
         """
@@ -400,6 +398,8 @@ class BaseCycleQuery(ABC):
         if exc is None:
             return
         self._runner_failure = exc
+        self._errors = CommunicationRuntimeError(
+            message=f"{self}: callback runner died: {type(exc).__name__}: {exc}")
         logger.error("%s: CALLBACK RUNNER DIED — %s: %s; subscription stopped, consumers receive "
                      "nothing more; fix the bug and resubscribe", self, type(exc).__name__, exc,
                      exc_info=exc)
