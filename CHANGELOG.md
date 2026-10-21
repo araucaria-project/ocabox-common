@@ -3,6 +3,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.3]
+### Fixed
+- T0 (`delay` of a cycle query — "not more often than this") is kept by the client, counted from
+  the delivery on its own monotonic clock: after a delivery the next request waits until `delay`
+  has passed. The echoed `no_send_before = ts + delay` alone anchored it on the device read, so
+  beside a faster subscriber the value served was already old and the server's gate opened early
+  (jk15 M3: `delay=1` answered every 0.51 s; with this, every 1.01 s). After a 4004 renewal, an
+  error, a timeout or a server-delivered None the next request still goes at once. The pause comes
+  out of the long-poll window, never out of the truth bound: the first request after it gets the
+  window left counted from the delivery (floored at `WINDOW_FLOOR`, 1 s), so its 4004 renewal still
+  lands within T2 and `is_contact_fresh()` never drops; the pause is capped at the window less
+  the floor (a warning when `delay` does not fit). The renewal-credibility and loop-starvation
+  thresholds follow the window actually sent. Wire unchanged; the server's gate stays.
+
 ## [1.10.2]
 ### Fixed
 - A cycle query whose callback runner died (an exception escaping the per-callback guard) looked
