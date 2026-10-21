@@ -3,6 +3,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.2]
+### Fixed
+- T0 (`delay` of a cycle query — "not more often than this") is kept by the client, counted from
+  the delivery on its own monotonic clock: after a delivery the next request waits until `delay`
+  has passed. The echoed `no_send_before = ts + delay` alone anchored it on the device read, so
+  beside a faster subscriber the value served was already old and the server's gate opened early
+  (jk15 M3: `delay=1` answered every 0.51 s; with this, every 1.01 s). After a 4004 renewal, an
+  error or a timeout the next request still goes at once. The pause is capped at T2 for a client
+  that declared one (a warning when `delay` exceeds it). Wire unchanged; the server's gate stays.
+- `ocabox-common_bases.__version_num__` follows the release again (it was left at 1.7.0).
+
 ## [1.10.1]
 ### Fixed
 - A cycle query's callback without `__name__` (a `functools.partial`, a callable object) no longer

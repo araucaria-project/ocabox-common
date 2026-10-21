@@ -620,6 +620,16 @@ class ConditionalCycleQuery(BaseCycleQuery):
         # consumers building their own liveness watchdogs MUST use those
         # instead of timing deliveries.
         self._last_contact_ts: float = time.monotonic()
+        # T0 — "not more often than ``delay``" — paced here, on this client's
+        # own monotonic clock, after each delivery (see ``_pace``). Never longer
+        # than T2: a pause is time without a request in flight, so it must not
+        # eat the truth window of a client that declared one.
+        self._delivered_mono: Optional[float] = None
+        self._pace_for: float = self._delay
+        if self._stale_opt_in and self._delay > self._tightest_t2():
+            logger.warning(f"{self}: delay {self._delay}s exceeds the truth bound T2 "
+                           f"{self._tightest_t2()}s — pacing at most T2")
+            self._pace_for = self._tightest_t2()
         # Router-silence warnings are throttled for opted-in subscriptions
         # (the tolerance clock, not the operator, owns the outage there).
         self._timeout_log_state: _LogPolicyState = self._error_policy.normal.log.make_state()
@@ -689,6 +699,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
         self._errors = None
         poll_started = None
         while True:
+            await self._pace()
             start_time = time.time()
 
             # update request data
@@ -913,6 +924,7 @@ class ConditionalCycleQuery(BaseCycleQuery):
                     await asyncio.sleep(0)
                     continue
                 self._notify_response()
+                self._delivered_mono = time.monotonic()
             except CommunicationRuntimeError as e:
                 self._errors = e
                 if not not_clear_result:
@@ -993,6 +1005,23 @@ class ConditionalCycleQuery(BaseCycleQuery):
                 self._notify_response()
                 break
             await asyncio.sleep(0)
+
+    async def _pace(self) -> None:
+        """T0 — "not more often than ``delay``" — kept by the consumer on its own
+        clock: after a delivery the next request waits until ``delay`` has
+        passed since it. The echoed ``no_send_before = ts + delay`` alone is
+        not enough: ``ts`` is when the device was read, and while another
+        subscriber keeps TIC's cache fresh the value served was already old, so
+        the server's gate opened early (a 1 s subscriber beside a 0.5 s one was
+        answered every 0.5 s). Only after a delivery: after a 4004 renewal, an
+        error or a timeout the next request goes at once, as before — the
+        server cannot tell those apart, which is why T0 lives here."""
+        if self._delivered_mono is None:
+            return
+        rest = self._pace_for - (time.monotonic() - self._delivered_mono)
+        self._delivered_mono = None
+        if rest > 0:
+            await asyncio.sleep(rest)
 
     def _tightest_t2(self) -> float:
         """Whole-batch truth bound: the tightest T2 in force across the batch."""
