@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "ocabox-common"
 # When bumping the version, also update: ocabox-common_bases.py __version_num__
-version = "1.11.0"
+version = "1.11.1"
 license = "MIT"
 description = ""
 authors = ["Ernest Lasek <elasek@akond.com>, Mikołaj Kałuszyński <mkalusz@camk.edu.pl>"]
@@ -16,7 +16,7 @@ packages = [
 [tool.poetry.dependencies]
 python = "^3.11"
 pyzmq = "^27.0.2"
-msgpack = ">=1.0.3,<1.1.0"
+msgpack = ">=1.2.1,<2"
 confuse = ">=1.7.0,<1.8.0"
 datamodels = {git = "https://github.com/araucaria-project/datamodels.git"}
 
