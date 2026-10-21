@@ -94,9 +94,16 @@ class TestCheckJk15(unittest.TestCase):
         self.assertNotIn("mirror covers", unreported_lamp.reason)
 
     def test_domeflat_by_day_moves_the_dome_to_the_screen(self):
-        verdict = check(self.g, night(sun_alt_deg=20), "camera", "domeflat")
+        verdict = check(self.g, night(sun_alt_deg=20, flatscreen="on"), "camera", "domeflat")
         self.assertIsInstance(verdict, Settable)
         self.assertEqual(verdict.moves, {"dome": "flat"})
+
+    def test_domeflat_needs_the_flat_screen_lit(self):
+        unknown = check(self.g, night(sun_alt_deg=20), "camera", "domeflat")
+        self.assertIsInstance(unknown, Impossible)
+        self.assertIn("flat screen is not known", unknown.reason)
+        off = check(self.g, night(sun_alt_deg=20, flatscreen="off"), "camera", "domeflat")
+        self.assertIn("flat screen is off", off.reason)
 
     def test_collision_names_the_holder(self):
         state = ProvenState(night(tertiary="beso").selectors, night().environment, holds={"tertiary": Hold("beso", "beso-run")})

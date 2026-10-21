@@ -309,8 +309,8 @@ class TestAuthoredOrder(unittest.TestCase):
         g = parse_graph(jk15())
         terminals = [r.terminal for r in enumerate_routes(g, "camera") if "dark" in r.classes]
         # table rows in authored order, nearest component first: M3 away (beso before andor), then through the
-        # cover's first row (open) to the dome's rows, then the cover's own closed row
-        self.assertEqual(terminals, ["tertiary", "dome", "covercalibrator"])
+        # cover's first row (open) to the dome's rows (flat: the screen off; closed), then the cover's own closed row
+        self.assertEqual(terminals, ["tertiary", "flatscreen", "dome", "covercalibrator"])
         swapped = jk15(tertiary={**jk15()["tertiary"], "positions": {"andor": {"port": 2}, "beso": {"port": 1}}})
         self.assertEqual(parse_graph(swapped).nodes["tertiary"].primary.vocabulary, ("andor", "beso"))
 

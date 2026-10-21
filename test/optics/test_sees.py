@@ -2,7 +2,7 @@ import unittest
 
 from datamodels.optics import DARK, UNDEFINED, SeesRecord, SelectorState
 
-from obcom.optics import DEFAULT_REGISTRY, Aspect, ProvenState, Selector, available_classes, parse_graph, proven_position, sees
+from obcom.optics import DEFAULT_REGISTRY, Aspect, ProvenState, Selector, available_classes, parse_graph, proven_position, resolve_axes, sees
 from test.optics.fixtures import BESO, JK15_WITH_MOUNT, NIGHT, TMMT, jk15, night
 
 
@@ -99,7 +99,9 @@ class TestSees(unittest.TestCase):
 
     def test_dome_closed_and_flat_positions(self):
         self.assertEqual(classes(sees(self.g, night(dome="closed"), "camera")), {(DARK, "dome")})
-        self.assertEqual(classes(sees(self.g, night(dome="flat"), "camera")), {("flatscreen", "flatscreen")})
+        self.assertEqual(classes(sees(self.g, night(dome="flat", flatscreen="on"), "camera")), {("flatscreen", "flatscreen")})
+        self.assertEqual(classes(sees(self.g, night(dome="flat", flatscreen="off"), "camera")), {(DARK, "flatscreen")})
+        self.assertEqual(classes(sees(self.g, night(dome="flat"), "camera")), {(UNDEFINED, "flatscreen")})  # nobody saw it lit
 
     def test_not_a_detector(self):
         with self.assertRaises(ValueError):
@@ -178,14 +180,32 @@ class TestDerivedDome(unittest.TestCase):
         self.g = parse_graph(JK15_WITH_MOUNT)
         self.base = {"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off"}
 
-    def test_shutter_closed_is_dark(self):
-        state = ProvenState.build(self.base, sun_alt_deg=-30, dome_shutter_open=False)
+    def test_shutter_closed_away_from_the_screen_is_dark(self):
+        state = ProvenState.build(self.base, sun_alt_deg=-30, dome_shutter_open=False, dome_az_deg=120.0, mount_az_deg=120.0, mount_alt_deg=60.0)
         self.assertEqual(classes(sees(self.g, state, "camera")), {(DARK, "dome")})
 
     def test_at_the_screen_is_flat(self):
-        state = ProvenState.build(self.base, sun_alt_deg=10, dome_shutter_open=True, dome_az_deg=49.0, mount_az_deg=229.0, mount_alt_deg=15.0)
+        state = ProvenState.build({**self.base, "flatscreen": "on"}, sun_alt_deg=10, dome_shutter_open=True, dome_az_deg=49.0, mount_az_deg=229.0, mount_alt_deg=15.0)
         self.assertEqual(classes(sees(self.g, state, "camera")), {("flatscreen", "flatscreen")})
         self.assertEqual(proven_position(self.g, state, self.g.nodes["dome"]), "flat")
+
+    def test_at_the_screen_with_the_shutter_closed_is_flat(self):
+        """Dome flats are taken with the shutter closed: the screen hangs inside the dome."""
+        state = ProvenState.build({**self.base, "flatscreen": "on"}, sun_alt_deg=10, dome_shutter_open=False, dome_az_deg=49.0, mount_az_deg=229.0, mount_alt_deg=15.0)
+        self.assertEqual(proven_position(self.g, state, self.g.nodes["dome"]), "flat")
+        self.assertEqual(classes(sees(self.g, state, "camera")), {("flatscreen", "flatscreen")})
+        no_shutter = ProvenState.build(self.base, dome_az_deg=49.0, mount_az_deg=229.0, mount_alt_deg=15.0)
+        self.assertEqual(proven_position(self.g, no_shutter, self.g.nodes["dome"]), "flat")  # the shutter does not matter here
+
+    def test_a_closed_shutter_with_unknown_pointing_is_undecidable(self):
+        state = ProvenState.build(self.base, dome_shutter_open=False)
+        self.assertIsNone(proven_position(self.g, state, self.g.nodes["dome"]))  # the telescope may be at the screen
+        self.assertEqual(resolve_axes(self.g, state, self.g.nodes["dome"])[None].cause, "dome or mount azimuth unknown")
+
+    def test_the_dome_says_what_flat_takes(self):
+        node = self.g.nodes["dome"]
+        self.assertEqual(node.kind.meaning(node.spec, self.g.components, None, "flat"),
+                         "the telescope at the flat screen: dome at 49°, telescope at az 229° alt 15°")
 
     def test_pointing_elsewhere_is_open(self):
         state = ProvenState.build(self.base, sun_alt_deg=-30, dome_shutter_open=True, dome_az_deg=120.0, mount_az_deg=120.0, mount_alt_deg=60.0)

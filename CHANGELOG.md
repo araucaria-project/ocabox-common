@@ -3,6 +3,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.12.0]
+### Changed
+- The dome is `flat` whenever mount and dome are at the flat screen, whatever the shutter — dome
+  flats are taken with the shutter closed, the screen hangs inside. Away from the screen the shutter
+  decides (closed ⇒ `closed`, open ⇒ `open`); a closed shutter with the pointing unknown is
+  undefined now ("dome or mount azimuth unknown"): the telescope may be at the screen.
+- The flat screen (`kind: flatscreen`) has its lamps' power axis like a lamp: proven `on` ⇒
+  `flatscreen`, `off` ⇒ dark, unread ⇒ undefined — declared by hand until a reading exists. It is
+  still ambient (`ConstantSource.point` now says a lamp has one physical output).
+### Added
+- `Kind.meaning(spec, components, aspect, symbol)`: what it takes for an axis to be at a position
+  nobody selects directly — the dome's `flat`: "the telescope at the flat screen: dome at 0°,
+  telescope at az 180° alt 15°".
+
 ## [1.11.1]
 ### Security
 - msgpack `>=1.2.1,<2` (was capped `<1.1.0` since 1.0.0, no recorded reason): GHSA-6v7p-g79w-8964,

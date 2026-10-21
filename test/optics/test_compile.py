@@ -66,7 +66,7 @@ class TestCompile(unittest.TestCase):
     def test_physical_realizations_of_one_alternative_get_distinct_keys(self):
         compiled = compile_telescope(parse_graph(jk15()))
         dark = [r for r in compiled.routes if r.function == "dark"]
-        self.assertEqual(sorted(r.realization for r in dark), [0, 1, 2])  # dome closed / cover closed / M3 away
+        self.assertEqual(sorted(r.realization for r in dark), [0, 1, 2, 3])  # dome closed / the flat screen off / cover closed / M3 away
         keys = {(r.detector, r.function, r.alternative, r.realization) for r in compiled.routes}
         self.assertEqual(len(keys), len(compiled.routes))
 
@@ -103,7 +103,7 @@ class TestCompile(unittest.TestCase):
         _verify(g, cover_lamp, "covercalibrator")
         with self.assertRaises(CompileError) as cm:
             _verify(g, cover_lamp, "flatscreen")  # right class, wrong provenance
-        self.assertIn("'lamp'@flatscreen but sees lamp@covercalibrator", str(cm.exception))
+        self.assertIn("flatscreen has no state that emits 'lamp'", str(cm.exception))
 
     def test_a_lamp_proven_off_is_a_dark_route_of_its_own(self):
         g = parse_graph(BESO)

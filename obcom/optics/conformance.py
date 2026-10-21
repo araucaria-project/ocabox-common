@@ -184,21 +184,22 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         "jk15 daytime",
-        "Sun up: OBJECT is impossible (no source provides sky.science), DOMEFLAT is settable by pointing dome and mount at the screen.",
-        JK15, _jk15_night().with_environment(sun_alt_deg=20.0), ("camera",),
+        "Sun up: OBJECT is impossible (no source provides sky.science), DOMEFLAT is settable by pointing dome and mount at the screen (its lamps lit).",
+        JK15, _jk15_night(flatscreen="on").with_environment(sun_alt_deg=20.0), ("camera",),
         (("camera", "object"), ("camera", "domeflat"), ("camera", "dark")),
     ),
     Scenario(
         "jk15 dome derived from environment: at the flat screen",
-        "No dome telemetry given as a selector state; shutter open, dome at domeflat_az, mount at domeflat_az+offset and domeflat_alt ⇒ position flat ⇒ flatscreen.",
+        "No dome telemetry given as a selector state; dome at domeflat_az, mount at domeflat_az+offset and domeflat_alt ⇒ position flat whatever the shutter (closed here: dome flats are taken so) ⇒ flatscreen, its lamps lit.",
         JK15_WITH_MOUNT,
-        ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off"}, sun_alt_deg=20.0, dome_shutter_open=True, dome_az_deg=49.0, mount_az_deg=229.0, mount_alt_deg=15.0),
+        ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off", "flatscreen": "on"}, sun_alt_deg=20.0, dome_shutter_open=False, dome_az_deg=49.0, mount_az_deg=229.0, mount_alt_deg=15.0),
         ("camera",), (("camera", "domeflat"), ("camera", "object")),
     ),
     Scenario(
         "jk15 dome derived from environment: shutter closed",
-        "Shutter closed ⇒ the dome is a dark terminal for every detector.",
-        JK15_WITH_MOUNT, ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off"}, sun_alt_deg=-30.0, dome_shutter_open=False),
+        "Shutter closed, the telescope away from the flat screen ⇒ the dome is a dark terminal for every detector.",
+        JK15_WITH_MOUNT, ProvenState.build({"tertiary": "andor", "covercalibrator": "open", "covercalibrator.calibrator": "off"}, sun_alt_deg=-30.0, dome_shutter_open=False,
+                                           dome_az_deg=120.0, mount_az_deg=120.0, mount_alt_deg=60.0),
         ("camera", "guider_beso"), (("camera", "dark"), ("camera", "object")),
     ),
     Scenario(
