@@ -3,6 +3,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.11.0]
+### Changed
+- One set of timing defaults, in `obcom.comunication.timing` (one line, one sentence each): T1
+  `DEFAULT_REFRESH_AFTER` 0.5 s is now the wire default too (`ValueRequest` used 60 s when the
+  caller gave none, so a bare client refreshed its cache every 0.5 s and was served values up to a
+  minute old); T0 `delay` defaults to the request's T1 — a change is delivered at most once per
+  refresh cadence — instead of a fixed 5 s (`DEFAULT_DELAY` is gone); `delay=0` is "no rate cap",
+  a negative delay is a `ValueError`; T1 is no longer taken from `delay` when only `delay` is given
+  (`BaseClientAPI.subscribe`, `send_cycle_multipart`). The T2 floor is derived
+  (`T2_FLOOR = RTT_BUDGET / SERVER_MARGIN_FRACTION` = 5 s, unchanged); the long-poll window,
+  renewal-credibility, starvation and catch-all constants are named there as well. The
+  "delay does not fit the window" warning is raised only for an explicit `delay` (the derived
+  default always fits). `PeriodicCycleQuery` clamps its period at `PERIODIC_MIN_DELAY` (0.5 s)
+  instead of only warning. Wire unchanged; `ValueRequest.DEFAULT_*` and
+  `BaseCycleQuery.DEFAULT_REQUEST_TIMEOUT` stay as names.
+
 ## [1.10.3]
 ### Fixed
 - T0 (`delay` of a cycle query — "not more often than this") is kept by the client, counted from
