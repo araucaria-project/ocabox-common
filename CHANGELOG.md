@@ -3,6 +3,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.2]
+### Fixed
+- A cycle query whose callback runner died (an exception escaping the per-callback guard) looked
+  alive forever: polling went on, `is_stopped()` stayed False, no callback fired again. The runner's
+  death now stops the query at once with a loud `CALLBACK RUNNER DIED` line, `runner_failure` carries
+  the exception, waiters and consumers see a stopped subscription.
+
 ## [1.10.1]
 ### Fixed
 - A cycle query's callback without `__name__` (a `functools.partial`, a callable object) no longer

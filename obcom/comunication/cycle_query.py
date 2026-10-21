@@ -154,6 +154,7 @@ class BaseCycleQuery(ABC):
             len(self._list_request))]  # data to put to nex request in `request_data` dict
         self._errors: CommunicationRuntimeError or None = None
         self._stop_reason: Optional[ResponseError] = None
+        self._runner_failure: Optional[BaseException] = None
         self._callback_methods_a: list = []
         self._callback_methods: list = []
         self._callback_task: asyncio.Task or None = None
@@ -300,6 +301,8 @@ class BaseCycleQuery(ABC):
         """
         if self.is_stopped():
             self._stop_reason = None
+            self._runner_failure = None
+            self._errors = None
             self._run()
             self._run_callbacks()
         else:
@@ -318,18 +321,21 @@ class BaseCycleQuery(ABC):
 
     async def stop_and_wait(self):
         self.stop()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-        try:
-            await self._callback_task
-        except asyncio.CancelledError:
-            pass
+        if self._task:
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        if self._callback_task:
+            try:
+                await self._callback_task
+            except (asyncio.CancelledError, Exception):
+                pass  # retrieved and logged in _on_callback_runner_done; see runner_failure
 
     def is_stopped(self):
         """
-        Method return false if cycle query is actually running.
+        Method return false if cycle query is actually running; also True after
+        the callback runner died (see ``runner_failure``).
 
         :return: False if running
         """
@@ -363,6 +369,13 @@ class BaseCycleQuery(ABC):
         ``_errors``."""
         return self._stop_reason
 
+    @property
+    def runner_failure(self) -> Optional[BaseException]:
+        """The exception that killed the callback runner and thereby stopped this query;
+        None while running, after a plain stop(), or after a restart. Distinct from
+        ``stop_reason`` (a server error on the truth axis): this one is a client-side bug."""
+        return self._runner_failure
+
     def add_callback_method(self, method):
         """
         This method added a given method to list method with one run after cycle query retrieve a nev message
@@ -372,6 +385,25 @@ class BaseCycleQuery(ABC):
 
     def _run_callbacks(self):
         self._callback_task = self._loop.create_task(self._execute_callbacks())
+        self._callback_task.add_done_callback(self._on_callback_runner_done)
+
+    def _on_callback_runner_done(self, task: asyncio.Task) -> None:
+        """The callback runner ended. Cancelled or finished normally (it exits when the query
+        stops): nothing to do. Killed by an exception: a library bug — no consumer can be fed
+        any more, so the query stops at once and says why. Retrieving the exception here is also
+        what keeps asyncio from logging 'Task exception was never retrieved' at GC time."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        self._runner_failure = exc
+        self._errors = CommunicationRuntimeError(
+            message=f"{self}: callback runner died: {type(exc).__name__}: {exc}")
+        logger.error("%s: CALLBACK RUNNER DIED — %s: %s; subscription stopped, consumers receive "
+                     "nothing more; fix the bug and resubscribe", self, type(exc).__name__, exc,
+                     exc_info=exc)
+        self.stop()
 
     async def _execute_callbacks(self):
         """Main loop for callback runner task"""
@@ -405,11 +437,8 @@ class BaseCycleQuery(ABC):
                     except Exception as e:
                         # Catch broadly so a buggy callback cannot kill the
                         # callback runner task. If the exception escapes this
-                        # try-except block, the task dies silently — the producer keeps
-                        # polling (so is_stopped() stays False and no
-                        # SUBSCRIPTION STOPPED log appears) but no further
-                        # callbacks fire, leaving downstream consumers with
-                        # stale data and no diagnostic signal.
+                        # try-except block, the task dies and triggers
+                        # _on_callback_runner_done to stop the query loudly.
                         #
                         # Do NOT widen to BaseException: CancelledError must
                         # propagate so task cancellation works correctly
