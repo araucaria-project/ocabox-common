@@ -89,6 +89,12 @@ class TestCompile(unittest.TestCase):
         compiled = compile_telescope(parse_graph(comps))
         self.assertEqual([c for c in compiled.conflicts if {c.a.detector, c.b.detector} == {"camera", "guider"} and c.a.function == "object" and c.b.function == "object"], [])
 
+    def test_positions_held_off_the_path_are_the_routes_too(self):
+        spec = jk15()
+        spec["camera"]["paths"]["dark_strict"] = {"see": "dark", "via": {"tertiary": "beso"}, "also": {"covercalibrator": "close"}}
+        routes = [r for r in compile_telescope(parse_graph(spec)).routes if r.function == "dark_strict"]
+        self.assertEqual([r.positions for r in routes], [{"tertiary": "beso", "covercalibrator": "close"}])
+
     def test_generated_routes_are_verified_against_the_graph(self):
         g = parse_graph(jk15())
         bogus = Route(detector="camera", function="object", alternative=0, see="sky.science", positions={"tertiary": "beso", "covercalibrator": "open", "dome": "open"})

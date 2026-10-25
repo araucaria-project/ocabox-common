@@ -36,8 +36,10 @@ def compile_telescope(graph: OpticalGraph) -> TelescopeCompiled:
         for function in node.paths:
             for i, alt in enumerate(node.paths.alternatives(function)):
                 # one authored alternative may be realised by several physical routes (a bare `dark`
-                # is blocked by the dome, the cover or M3): each gets its own ordinal so RouteKey is unique
-                for k, r in enumerate(routes_for_goal(static, alt)):
+                # is blocked by the dome, the cover or M3): each gets its own ordinal so RouteKey is unique;
+                # positions held off the path (`also`) are the route's too — what it sets and what it conflicts on
+                realised = (r.merged(alt.also or {}, None) for r in routes_for_goal(static, alt))
+                for k, r in enumerate(r for r in realised if r is not None):
                     route = Route(detector=detector, function=function, alternative=i, realization=k,
                                   see=alt.see, positions=dict(r.positions), when=alt.when)
                     routes.append((route, r.terminal))

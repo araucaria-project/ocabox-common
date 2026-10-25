@@ -44,6 +44,7 @@ from obcom.optics.layout import Label, Place, Schematic, Wire, place_labels, sch
 from obcom.optics.ribbon import Ribbon, RibbonStop, StopRole, published_values, ribbon, seen_positions
 from obcom.optics.sees import ValuesOf, available_classes, emerging, outgoing, sees
 from obcom.optics.labels import component_label, label
+from obcom.optics.stations import default_detector, is_selected, positions_of, routing_selectors, selected_by, station
 from obcom.optics.state import Declaration, Hold, ProvenState, Resolved, proven_position, published_state, resolve_axes
 from obcom.optics.telemetry import Readings, proven_state, tertiary_symbol
 
@@ -57,6 +58,7 @@ __all__ = [
     "enumerate_routes", "routes_for_goal", "StaticRoute",
     "ProvenState", "Hold", "Declaration", "Resolved", "proven_position", "published_state", "resolve_axes",
     "label", "component_label",
+    "routing_selectors", "selected_by", "station", "is_selected", "default_detector", "positions_of",
     "Readings", "proven_state", "tertiary_symbol",
     "KindRegistry", "DEFAULT_REGISTRY", "default_registry", "Kind", "Source", "ConstantSource", "SkySource",
     "Selector", "SelectorShape", "Aspect", "Axis", "DomeKind", "Splitter", "Passive", "Detector",

@@ -8,8 +8,15 @@ elsewhere, its source not emitting — lets the next alternative answer, and onl
 the verdict ``collision`` (the first hold met) or ``impossible`` (what is unavailable). Authoring
 ``dark_strict: [{see: dark, via: {covercalibrator: close}, when: sky.science}, {see: dark, via:
 {tertiary: beso}}]`` therefore means "the closed cover at night, else M3 away" — an author who wants
-no fallback writes one alternative. ``invalid`` never comes from here — the graph would not have
-loaded.
+no fallback writes one alternative. ``also`` holds positions the light does not pass (``{see: dark,
+via: {tertiary: beso}, also: {covercalibrator: close}}``: M3 away *and* the covers closed); they are
+moved, held and proven like the route's own. ``invalid`` never comes from here — the graph would not
+have loaded.
+
+Light that comes by itself — the sky, whose class follows the sun (``Source.comes``) — makes a goal
+only *not yet* possible: ``impossible`` with ``awaits`` (the class, and when it comes in the reason)
+and ``prepare`` (the moves of the best clean route, empty when the path is ready). A preparation that
+would collide or move a selector held unknown is not offered; a lamp never comes by itself.
 
 Among several settable routes the solver prefers, in order: fewest moves, least collateral
 change to what the *other* detectors see, the blocking/emitting terminal closest to the
@@ -69,6 +76,7 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
     undefined_sources: set[str] = set()
     collision: Collision | None = None
     held_unknown: dict[str, Hold] = {}
+    awaited: tuple[str, str, dict[str, str]] | None = None  #: (class, when it comes, moves that prepare for it)
     applicable = False
     for alt in alternatives:
         if alt.when is not None and not any(light_satisfies(alt.when, c) for c in available):
@@ -76,24 +84,35 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
         applicable = True
         if _is_active(now, alt, proven):
             on_path = {c for r in now for c in (r.terminal, *r.via)}
-            positions = {k: v for k, v in proven.items() if v is not None and split_state_key(k)[0] in on_path}
+            positions = {k: v for k, v in proven.items() if v is not None and (split_state_key(k)[0] in on_path or k in (alt.also or {}))}
             return Active(kind=VerdictKind.ACTIVE, see=alt.see, positions=positions)
 
         feasible: list[tuple[tuple[int, int, int, int], StaticRoute, dict[str, str]]] = []
-        for index, route in enumerate(routes_for_goal(routes, alt)):
+        preparing: list[tuple[tuple[int, int, int, int], str, dict[str, str]]] = []
+        for index, static in enumerate(routes_for_goal(routes, alt)):
+            route = static.merged(alt.also or {}, None)  # the positions held off the path are part of the route
+            if route is None:
+                continue
             emitted = _terminal_emission(graph, state, route)
+            comes = None
             if emitted is not None and not light_satisfies(alt.see, emitted):
                 unavailable = unavailable or alt.see
                 not_emitting[route.terminal] = emitted
                 if emitted == UNDEFINED:
                     undefined_sources.add(route.terminal)
-                continue
+                comes = _comes(graph, state, route.terminal, alt.see)
+                if comes is None:
+                    continue
             moves = route.moves_from(proven)
             blocked = {k: state.holds[k] for k in moves if k in state.holds and state.holds[k].position is None}
+            held = None if blocked else _collision(graph, state, route, moves, alt.see)
+            if comes is not None:  # a path prepared for light still to come: only a clean one is worth offering
+                if not blocked and held is None:
+                    preparing.append(((len(moves), _collateral(graph, state, others_now, route), len(route.via), index), comes, moves))
+                continue
             if blocked:
                 held_unknown.update(blocked)
                 continue
-            held = _collision(graph, state, route, moves, alt.see)
             if held is not None:
                 collision = collision or held
                 continue
@@ -102,9 +121,16 @@ def check(graph: OpticalGraph, state: ProvenState, detector: str, function: str)
         if feasible:
             _, route, moves = min(feasible, key=lambda t: t[0])
             return Settable(kind=VerdictKind.SETTABLE, see=alt.see, positions=dict(route.positions), moves=moves)
+        if preparing and awaited is None:
+            _, comes, moves = min(preparing, key=lambda t: t[0])
+            awaited = (alt.see, comes, moves)
 
     if collision is not None:
         return collision
+    if awaited is not None:
+        see, comes, prepare = awaited
+        return Impossible(kind=VerdictKind.IMPOSSIBLE, reason=f"{see} is not available yet: it comes {comes}",
+                          unavailable=see, awaits=see, prepare=prepare)
     unknown_terminals = {r.terminal for r in now if r.light_class == UNDEFINED} | undefined_sources
     undefined_at = tuple(sorted({k for k, v in proven.items() if v is None} | {k for name in unknown_terminals for k in _undefined_axes(graph, state, name)}))
     if not applicable:
@@ -150,7 +176,7 @@ def _keys(routes: Iterable[StaticRoute], alternatives: Iterable[GoalSpec]) -> se
     for r in routes:
         keys |= set(r.positions)
     for alt in alternatives:
-        keys |= set(alt.via)
+        keys |= set(alt.via) | set(alt.also or {})
     return keys
 
 
@@ -173,8 +199,11 @@ def _collateral(graph: OpticalGraph, state: ProvenState, others_now: Mapping[str
 
 def _is_active(now: frozenset[SeesRecord], alt: GoalSpec, proven: Mapping[str, str | None]) -> bool:
     """Active = the detector sees the goal class from *one* terminal and nothing else, through the
-    pinned ``via`` — two lamps of the same class are contamination, as in route enumeration."""
+    pinned ``via``, with ``also`` held — two lamps of the same class are contamination, as in route
+    enumeration."""
     if len(now) != 1 or any(not light_satisfies(alt.see, r.light_class) for r in now):
+        return False
+    if any(proven.get(key) != symbol for key, symbol in (alt.also or {}).items()):
         return False
     for record in now:
         on_path = {record.terminal, *record.via}
@@ -182,6 +211,15 @@ def _is_active(now: frozenset[SeesRecord], alt: GoalSpec, proven: Mapping[str, s
             if split_state_key(key)[0] not in on_path or proven.get(key) != symbol:
                 return False
     return True
+
+
+def _comes(graph: OpticalGraph, state: ProvenState, terminal: str, light_class: str) -> str | None:
+    """When the source ``terminal`` will give ``light_class`` by itself (the sky at dusk), in words;
+    ``None`` for a selector terminal and for light that never comes by itself."""
+    node = graph.nodes[terminal]
+    if not isinstance(node.kind, Source):
+        return None
+    return node.kind.comes(node.spec, light_class, state.environment)
 
 
 def _terminal_emission(graph: OpticalGraph, state: ProvenState, route: StaticRoute) -> str | None:

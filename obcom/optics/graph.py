@@ -16,6 +16,8 @@ only when the first pass found nothing — its errors are then reported all at o
 
 from __future__ import annotations
 
+from collections import deque
+
 from collections import defaultdict
 from dataclasses import dataclass, field
 from itertools import product
@@ -205,6 +207,24 @@ class OpticalGraph:
             seen.add(current)
             stack.extend(self.nodes[current].upstreams)
         return frozenset(seen)
+
+    def upstream_of(self, name: str, kind: str) -> tuple[str, ...]:
+        """The components of ``kind`` light can reach ``name`` through, nearest first — what an
+        instrument owns or shares by configuration, whatever the selectors say now: the camera's
+        filter wheel, the derotator in front of camera and guider alike; empty when there is none
+        (BESO has no rotator). ``graph.upstream_of('camera', 'filterwheel')[0]`` is its own wheel."""
+        found: list[str] = []
+        seen: set[str] = set()
+        queue = deque(sorted(self.node(name).upstreams))
+        while queue:
+            current = queue.popleft()
+            if current in seen:
+                continue
+            seen.add(current)
+            if self.nodes[current].spec.kind == kind:
+                found.append(current)
+            queue.extend(sorted(self.nodes[current].upstreams))
+        return tuple(found)
 
     def emitted_classes(self, name: str) -> frozenset[str]:
         """Every light class the component can ever put on a path (its own emissions, reserved
@@ -486,5 +506,21 @@ def _check_paths(graph: OpticalGraph, errors: list[ConfigError]) -> None:
                         what = key if aspect else component
                         _err(errors, "undeclared_position", f"{where}: {what!r} has no position {symbol!r} (declared: {', '.join(axis.vocabulary)})", node.name, f"{where}.via")
                         ok = False
+                for key, symbol in (alt.also or {}).items():  # held off the path: any selector of the telescope
+                    component, aspect = split_state_key(key)
+                    if component not in graph.nodes or graph.nodes[component].archetype != Archetype.SELECTOR:
+                        _err(errors, "also_not_a_selector", f"{where}: also {key!r} is not a selector of this telescope", node.name, f"{where}.also")
+                        ok = False
+                        continue
+                    axis = next((a for a in graph.nodes[component].axes if a.name == aspect), None)
+                    if axis is None:
+                        _err(errors, "unknown_aspect", f"{where}: {component!r} has no aspect {aspect!r}", node.name, f"{where}.also")
+                        ok = False
+                    elif symbol not in axis.vocabulary:
+                        what = key if aspect else component
+                        _err(errors, "undeclared_position", f"{where}: {what!r} has no position {symbol!r} (declared: {', '.join(axis.vocabulary)})", node.name, f"{where}.also")
+                        ok = False
                 if ok and not routes_for_goal(routes, alt):
                     _err(errors, "unsatisfiable_path", f"{where}: no route through the graph shows {node.name} {alt.see!r} with via {alt.via}", node.name, where)
+                elif ok and alt.also and not any(r.merged(alt.also, None) is not None for r in routes_for_goal(routes, alt)):
+                    _err(errors, "unsatisfiable_path", f"{where}: every route that shows {node.name} {alt.see!r} needs another position of {', '.join(sorted(alt.also))} than also holds", node.name, f"{where}.also")

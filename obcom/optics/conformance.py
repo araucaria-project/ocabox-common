@@ -249,6 +249,26 @@ SCENARIOS: tuple[Scenario, ...] = (
         "A stateful source without its input is undefined — nothing is validated on a guess.",
         TMMT, ProvenState.build({}), ("cam_a",), (("cam_a", "object"),),
     ),
+    Scenario(
+        "jk15 dusk: object waits for the night",
+        "Sun at -12° and setting, covers closed: OBJECT is impossible *yet* — awaits sky.science and prepares by opening the covers; SKYFLAT is the light now.",
+        JK15, _jk15_night(covercalibrator="close").with_environment(sun_alt_deg=-12.0, sun_rising=False), ("camera",),
+        (("camera", "object"), ("camera", "skyflat")),
+    ),
+    Scenario(
+        "jk15 dawn: no night is promised",
+        "Sun at -17° and rising: OBJECT is impossible with nothing awaited; SKYFLAT waits for the sun to rise above -15°.",
+        JK15, _jk15_night().with_environment(sun_alt_deg=-17.0, sun_rising=True), ("camera",),
+        (("camera", "object"), ("camera", "skyflat")),
+    ),
+    Scenario(
+        "jk15 dark_strict with also: M3 away and the covers closed",
+        "dark_strict = M3 at beso (via) with the covers closed too (also, off the camera's path): with M3 already at beso the covers still have to close.",
+        {**JK15, "camera": {**JK15["camera"], "paths": {**JK15["camera"]["paths"],
+                                                        "dark_strict": {"see": "dark", "via": {"tertiary": "beso"}, "also": {"covercalibrator": "close"}}}}},
+        _jk15_night(tertiary="beso"), ("camera",),
+        (("camera", "dark_strict"),),
+    ),
 )
 
 

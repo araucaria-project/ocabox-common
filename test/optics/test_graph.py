@@ -315,5 +315,17 @@ class TestAuthoredOrder(unittest.TestCase):
         self.assertEqual(parse_graph(swapped).nodes["tertiary"].primary.vocabulary, ("andor", "beso"))
 
 
+class TestUpstreamOf(unittest.TestCase):
+    """What an instrument owns by configuration — for its tab: the wheel and the rotator in front of it."""
+
+    def test_nearest_first_whatever_the_selectors_say(self):
+        g = parse_graph(jk15())
+        self.assertEqual(g.upstream_of("camera", "filterwheel"), ("filterwheel",))
+        self.assertEqual(g.upstream_of("camera", "rotator"), ("derotator",))
+        self.assertEqual(g.upstream_of("guider", "rotator"), ("derotator",))  # shared with the camera
+        self.assertEqual(g.upstream_of("guider", "filterwheel"), ())  # the pick-off is before the wheel
+        self.assertEqual(g.upstream_of("guider_beso", "rotator"), ())
+
+
 if __name__ == "__main__":
     unittest.main()
