@@ -3,6 +3,32 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.13.0]
+### Added
+- `also:` on a goal alternative (datamodels 0.7): positions held although the light does not pass
+  them — `dark_strict: {see: dark, via: {tertiary: beso}, also: {covercalibrator: close}}` is M3 away
+  *and* the covers closed (stray light finds its way around a mirror). They are part of the route:
+  moved, held (collisions) and required for `active`; `parse_graph` checks the selector, aspect and
+  position, and that some route agrees with them (`also_not_a_selector`, `unsatisfiable_path`);
+  the compiled route table carries them in the route's positions (and conflicts on them).
+- Light that comes by itself: `Source.comes(spec, class, env)` — the sky's states follow the sun's
+  bands, every darker one still to come while it sets, every brighter one while it rises
+  (`Environment.sun_rising`; without it nothing is promised). `check` answers a goal whose only
+  obstacle is such light with `impossible` + `awaits` (the class; "it comes when the sun sets below
+  -18° (now -12.0°)" in the reason) + `prepare` (the moves of the best clean route, empty when the
+  path is ready). A preparation that collides or moves a selector held unknown is not offered; a
+  lamp or the flat screen is never awaited. Three conformance scenarios (dusk, dawn, also).
+- `OpticalGraph.upstream_of(name, kind)`: the components of a kind in front of a component, nearest
+  first, by configuration — an instrument's own filter wheel and rotator (TOI's instrument tab).
+- Stations (`obcom.optics.stations`): `routing_selectors` (more than one output: M3 — the dome, the
+  covers and M4/M5 choose *what* comes in, not *to whom*), `selected_by(detector)` (their positions
+  whose light reaches it), `station(detector)` (detectors selected together: an instrument and its
+  guider), `is_selected`, `default_detector(positions)` (the selected one with functions before the
+  guiders, then configuration order; `None` while a routing selector is not known — never "the one
+  that sees the sky") and `positions_of` (from the service's published `self.selectors`).
+- `DomeKind.screen(spec, components)` is public: (dome az, mount az, mount alt) of the flat screen,
+  where an actuator takes the telescope and the dome for a dome flat.
+
 ## [1.12.0]
 ### Changed
 - The dome is `flat` whenever mount and dome are at the flat screen, whatever the shutter — dome

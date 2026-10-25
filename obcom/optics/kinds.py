@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, ClassVar, Mapping
 
-from datamodels.optics import DARK, UNDEFINED, Archetype, Environment, OpticalComponentSpec, SkyState, SourceFamily, light_family
+from datamodels.optics import DARK, UNDEFINED, Archetype, Environment, OpticalComponentSpec, SkyState, SourceFamily, light_family, light_state
 
 # --- signals -----------------------------------------------------------------------------------
 
@@ -197,6 +197,11 @@ class Source(Kind):
         """The class emitted for these axis values; ``UNDEFINED`` when it cannot be decided."""
         raise NotImplementedError
 
+    def comes(self, spec: OpticalComponentSpec, light_class: str, env: Environment) -> str | None:
+        """When this source will put out ``light_class`` by itself, in words for people ("when the sun
+        sets below -18° (now -12.3°)"); ``None`` when it will not — a lamp never lights itself."""
+        return None
+
     def transfer(self, spec, values):
         return {OUT: frozenset({Emit(self.emission(spec, values))})}
 
@@ -293,6 +298,27 @@ class SkySource(Source):
     def emission(self, spec, values):
         state = values.get(None)
         return UNDEFINED if state is None else f"{SourceFamily.SKY}.{state}"
+
+    def bands(self, spec: OpticalComponentSpec) -> dict[SkyState, tuple[float, float]]:
+        """The sun-altitude band of every sky state, ``[low, high)``, darkest first."""
+        science, (flat_lo, flat_hi) = self.thresholds(spec)
+        return {SkyState.SCIENCE: (-math.inf, science), SkyState.TWILIGHT: (science, flat_lo),
+                SkyState.FLAT: (flat_lo, flat_hi), SkyState.DAY: (flat_hi, math.inf)}
+
+    def comes(self, spec, light_class, env):
+        """The sky's states follow the sun: while it sets every darker band is still to come, while it
+        rises every brighter one — science light comes in the evening, flat light in the evening
+        before dusk and in the morning before dawn. Without the sun's direction nothing is promised."""
+        state = light_state(light_class)
+        if light_family(light_class) != str(SourceFamily.SKY) or state is None or env.sun_alt_deg is None or env.sun_rising is None:
+            return None
+        low, high = self.bands(spec)[SkyState(state)]
+        sun = float(env.sun_alt_deg)
+        if not env.sun_rising and sun >= high:
+            return f"when the sun sets below {high:g}° (now {sun:.1f}°)"
+        if env.sun_rising and sun < low:
+            return f"when the sun rises above {low:g}° (now {sun:.1f}°)"
+        return None
 
     def validate(self, spec, components):
         extra = spec.model_extra or {}
@@ -479,7 +505,7 @@ class DomeKind(Selector):
         if aspect is not None:
             return None
         if symbol == self.FLAT:
-            target = self._screen(spec, components)
+            target = self.screen(spec, components)
             if target is None:
                 return "the telescope at the flat screen"
             dome_az, mount_az, mount_alt = target
@@ -488,8 +514,9 @@ class DomeKind(Selector):
         return {self.OPEN: "the shutter open, away from the flat screen",
                 self.CLOSED: "the shutter closed, away from the flat screen"}.get(symbol)
 
-    def _screen(self, spec, components) -> tuple[float, float, float | None] | None:
-        """(dome az, mount az, mount alt) of the flat screen from the config; ``None`` without it."""
+    def screen(self, spec, components) -> tuple[float, float, float | None] | None:
+        """(dome az, mount az, mount alt) of the flat screen from the config — where the telescope
+        and the dome go for a dome flat; ``None`` without it."""
         domeflat_az = (spec.model_extra or {}).get("domeflat_az")
         if domeflat_az is None:
             return None
@@ -503,7 +530,7 @@ class DomeKind(Selector):
         """Mount and dome at the flat screen; ``None`` when that cannot be decided."""
         if self.FLAT not in self.inputs(spec):
             return False
-        target = self._screen(spec, components)
+        target = self.screen(spec, components)
         if target is None or env.dome_az_deg is None or env.mount_az_deg is None:
             return None
         dome_az, mount_az, mount_alt = target

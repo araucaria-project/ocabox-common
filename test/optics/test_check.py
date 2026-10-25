@@ -1,8 +1,9 @@
+import copy
 import unittest
 
 from datamodels.optics import Active, Collision, Impossible, Settable
 
-from obcom.optics import DEFAULT_REGISTRY, Aspect, Hold, ProvenState, Selector, UnknownFunction, check, check_result, parse_graph, resolve
+from obcom.optics import DEFAULT_REGISTRY, Aspect, GraphInvalid, Hold, ProvenState, Selector, UnknownFunction, check, check_result, parse_graph, resolve
 from test.optics.fixtures import BESO, TMMT, jk15, night
 
 
@@ -210,6 +211,101 @@ class TestCheckBesoAndTmmt(unittest.TestCase):
         self.assertIsInstance(check(g, ProvenState.build({}, sun_alt_deg=-30), "cam_a", "object"), Active)
         self.assertIsInstance(check(g, ProvenState.build({}, sun_alt_deg=-30), "cam_a", "skyflat"), Impossible)
         self.assertEqual(check(g, ProvenState.build({}, sun_alt_deg=-30), "cam_a", "object").positions, {})
+
+
+def _strict(**goal) -> dict:
+    """jk15 whose camera ``dark_strict`` is ``goal``."""
+    spec = copy.deepcopy(jk15())
+    spec["camera"]["paths"]["dark_strict"] = goal
+    return spec
+
+
+class TestAlso(unittest.TestCase):
+    """``also``: positions held although the light does not pass them — M3 turns the camera away and
+    the covers close too, because stray light finds its way around a mirror."""
+
+    def setUp(self):
+        self.g = parse_graph(_strict(see="dark", via={"tertiary": "beso"}, also={"covercalibrator": "close"}))
+
+    def test_both_are_moved(self):
+        verdict = check(self.g, night(), "camera", "dark_strict")
+        self.assertIsInstance(verdict, Settable)
+        self.assertEqual(verdict.moves, {"tertiary": "beso", "covercalibrator": "close"})
+
+    def test_dark_alone_is_not_enough(self):
+        verdict = check(self.g, night(tertiary="beso"), "camera", "dark_strict")
+        self.assertIsInstance(verdict, Settable)  # the camera sees dark already; the covers are still open
+        self.assertEqual(verdict.moves, {"covercalibrator": "close"})
+
+    def test_active_with_everything_held_and_says_so(self):
+        verdict = check(self.g, night(tertiary="beso", covercalibrator="close"), "camera", "dark_strict")
+        self.assertIsInstance(verdict, Active)
+        self.assertEqual(verdict.positions["covercalibrator"], "close")
+
+    def test_a_held_also_collides(self):
+        state = night(tertiary="beso")
+        state = ProvenState(selectors=state.selectors, environment=state.environment, holds={"covercalibrator": Hold("open", "camera exposing")})
+        verdict = check(self.g, state, "camera", "dark_strict")
+        self.assertIsInstance(verdict, Collision)
+        self.assertEqual(verdict.selector, "covercalibrator")
+
+    def test_config_errors(self):
+        for also, code in (({"nosuch": "close"}, "also_not_a_selector"), ({"covercalibrator": "ajar"}, "undeclared_position"),
+                           ({"camera": "on"}, "also_not_a_selector")):
+            with self.subTest(also=also), self.assertRaises(GraphInvalid) as raised:
+                parse_graph(_strict(see="dark", via={"tertiary": "beso"}, also=also))
+            self.assertIn(code, {e.code for e in raised.exception.errors})
+
+    def test_also_against_every_route_is_unsatisfiable(self):
+        with self.assertRaises(GraphInvalid) as raised:  # the closed covers are seen only with M3 at andor
+            parse_graph(_strict(see="dark", via={"covercalibrator": "close"}, also={"tertiary": "beso"}))
+        self.assertIn("unsatisfiable_path", {e.code for e in raised.exception.errors})
+
+
+class TestAwaits(unittest.TestCase):
+    """Light that comes by itself (the sky) leaves the goal only *not yet* possible, with the moves that
+    prepare the path; a lamp never comes by itself."""
+
+    def setUp(self):
+        self.g = parse_graph(jk15())
+
+    def dusk(self, rising=False, sun=-12.0, **positions):
+        return night(sun_alt_deg=sun, **positions).with_environment(sun_rising=rising)
+
+    def test_object_at_dusk_waits_and_prepares(self):
+        verdict = check(self.g, self.dusk(covercalibrator="close"), "camera", "object")
+        self.assertIsInstance(verdict, Impossible)
+        self.assertEqual((verdict.awaits, verdict.prepare), ("sky.science", {"covercalibrator": "open"}))
+        self.assertEqual(verdict.reason, "sky.science is not available yet: it comes when the sun sets below -18° (now -12.0°)")
+
+    def test_a_prepared_path_only_waits(self):
+        verdict = check(self.g, self.dusk(), "camera", "object")
+        self.assertEqual((verdict.awaits, verdict.prepare), ("sky.science", {}))
+
+    def test_the_morning_promises_no_night(self):
+        verdict = check(self.g, self.dusk(rising=True), "camera", "object")
+        self.assertIsInstance(verdict, Impossible)
+        self.assertIsNone(verdict.awaits)
+
+    def test_without_the_suns_direction_nothing_is_promised(self):
+        self.assertIsNone(check(self.g, night(sun_alt_deg=-12.0), "camera", "object").awaits)
+
+    def test_morning_flats_wait_for_the_dawn(self):
+        verdict = check(self.g, self.dusk(rising=True, sun=-17.0), "camera", "skyflat")
+        self.assertEqual(verdict.awaits, "sky.flat")
+        self.assertIn("rises above -15°", verdict.reason)
+
+    def test_a_preparation_that_collides_is_not_offered(self):
+        state = self.dusk(covercalibrator="close")
+        state = ProvenState(selectors=state.selectors, environment=state.environment, holds={"covercalibrator": Hold("close", "an operator")})
+        verdict = check(self.g, state, "camera", "object")
+        self.assertIsInstance(verdict, Impossible)
+        self.assertIsNone(verdict.awaits)  # the truth stays "not available now", no promise of a path
+
+    def test_the_flat_screen_is_never_awaited(self):
+        verdict = check(self.g, self.dusk(flatscreen="off"), "camera", "domeflat")
+        self.assertIsInstance(verdict, (Impossible, Collision, Settable))
+        self.assertIsNone(getattr(verdict, "awaits", None))
 
 
 if __name__ == "__main__":
